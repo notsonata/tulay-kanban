@@ -318,9 +318,9 @@ function renderBoard() {
                         <span class="material-symbols-outlined text-[18px]">more_horiz</span>
                     </button>
                     <div class="column-menu hidden absolute right-0 top-8 bg-white dark:bg-[#151e29] rounded-lg shadow-xl border border-[#e5e7eb] dark:border-[#1e2936] py-1 w-48 z-10" data-column-id="${col.id}">
-                        <button onclick="createCardFromMenu('${col.id}')" class="w-full flex items-center gap-3 px-4 py-2 text-sm text-[#111418] dark:text-white hover:bg-[#eff1f3] dark:hover:bg-[#1e2936] transition-colors text-left">
+                        <button onclick="scrollToAddCard('${col.id}')" class="w-full flex items-center gap-3 px-4 py-2 text-sm text-[#111418] dark:text-white hover:bg-[#eff1f3] dark:hover:bg-[#1e2936] transition-colors text-left">
                             <span class="material-symbols-outlined text-[18px]">add</span>
-                            Create card
+                            Add card
                         </button>
                         <div class="border-t border-[#e5e7eb] dark:border-[#1e2936] my-1"></div>
                         <button onclick="moveColumnLeft('${col.id}')" class="w-full flex items-center gap-3 px-4 py-2 text-sm text-[#111418] dark:text-white hover:bg-[#eff1f3] dark:hover:bg-[#1e2936] transition-colors text-left" ${index === 0 ? 'disabled style="opacity: 0.5; cursor: not-allowed;"' : ''}>
@@ -786,9 +786,18 @@ function editColumnTitle(columnId) {
     }, { once: true });
 }
 
-function createCardFromMenu(columnId) {
+function scrollToAddCard(columnId) {
     closeAllColumnMenus();
-    showInlineAddForm(columnId);
+    const column = document.querySelector(`.column[data-column-id="${columnId}"]`);
+    if (!column) return;
+    
+    const addBtn = column.querySelector('.add-card-btn');
+    if (addBtn) {
+        addBtn.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        setTimeout(() => {
+            addBtn.click();
+        }, 300);
+    }
 }
 
 function closeAllColumnMenus() {
