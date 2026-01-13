@@ -93,11 +93,31 @@ const elements = {
         inprogress: document.getElementById('headerProgressCount'),
         done: document.getElementById('headerDoneCount')
     },
-    toastContainer: document.getElementById('toastContainer')
+    toastContainer: document.getElementById('toastContainer'),
+    // Delete Modal
+    deleteModal: document.getElementById('deleteModal'),
+    deleteTaskTitle: document.getElementById('deleteTaskTitle'),
+    cancelDeleteBtn: document.getElementById('cancelDeleteBtn'),
+    confirmDeleteBtn: document.getElementById('confirmDeleteBtn'),
+    // Board Elements
+    boardList: document.getElementById('boardList'),
+    createBoardBtn: document.getElementById('createBoardBtn'),
+    createBoardModal: document.getElementById('createBoardModal'),
+    newBoardName: document.getElementById('newBoardName'),
+    cancelCreateBoardBtn: document.getElementById('cancelCreateBoardBtn'),
+    confirmCreateBoardBtn: document.getElementById('confirmCreateBoardBtn'),
+    // Delete Board Modal
+    deleteBoardModal: document.getElementById('deleteBoardModal'),
+    deleteBoardName: document.getElementById('deleteBoardName'),
+    cancelDeleteBoardBtn: document.getElementById('cancelDeleteBoardBtn'),
+    confirmDeleteBoardBtn: document.getElementById('confirmDeleteBoardBtn')
 };
 
 let workspaceMembers = [];
+let boards = [];
+let columns = [];
 let activeWorkspaceId = null;
+let taskToDeleteId = null;
 
 // ===== Label Colors =====
 const labelColors = {
@@ -157,10 +177,18 @@ async function loadTasks() {
         const response = await authFetch(`${API_URL}/api/boards/${activeBoardId}/tasks`);
         if (!response) return; // authFetch handles redirect
 
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('Failed to load tasks:', response.status, errorText);
+            showToast('Failed to load tasks', 'error');
+            return;
+        }
+
         tasks = await response.json();
         renderBoard();
     } catch (e) {
         console.error('Error loading tasks:', e);
+        showToast('Error loading tasks', 'error');
     }
 }
 
@@ -244,35 +272,80 @@ function getDefaultTasks() {
 }
 
 // ===== Render Functions =====
+// ===== Board Rendering =====
 function renderBoard() {
-    // Clear all lists
-    Object.values(elements.lists).forEach(list => {
-        list.innerHTML = '';
-    });
+    const boardEl = document.getElementById('board');
+    if (!boardEl) return;
 
-    // Group tasks by status
-    const grouped = {
-        todo: tasks.filter(t => t.status === 'todo'),
-        inprogress: tasks.filter(t => t.status === 'inprogress'),
-        done: tasks.filter(t => t.status === 'done')
-    };
+    if (!activeBoardId || columns.length === 0) {
+        boardEl.innerHTML = `
+            <div class="flex flex-col items-center justify-center w-full h-full text-[#8a98a8]">
+                <span class="material-symbols-outlined text-4xl mb-4 opacity-30">dashboard</span>
+                <p class="text-sm">Select a board to view tasks</p>
+            </div>
+        `;
+        return;
+    }
 
-    // Render tasks in each column
-    Object.entries(grouped).forEach(([status, statusTasks]) => {
-        const list = elements.lists[status];
+    boardEl.innerHTML = columns.map(col => `
+        <div class="column flex flex-col w-80 flex-shrink-0 h-full rounded-xl transition-colors" data-column-id="${col.id}">
+            <div class="flex items-center justify-between mb-3 px-1">
+                <div class="flex items-center gap-2">
+                    <span class="flex items-center justify-center size-5 rounded bg-${col.color || 'gray-100'} dark:bg-gray-800 text-[10px] font-bold text-gray-600 dark:text-gray-300" 
+                          id="count-${col.id}">0</span>
+                    <h3 class="text-sm font-semibold text-[#111418] dark:text-white">${escapeHtml(col.title)}</h3>
+                </div>
+                <div class="flex items-center gap-1">
+                    <button class="text-[#8a98a8] hover:text-[#111418] dark:hover:text-white" onclick="deleteColumn('${col.id}')">
+                        <span class="material-symbols-outlined text-[16px]">delete</span>
+                    </button>
+                    <button class="text-[#8a98a8] hover:text-[#111418] dark:hover:text-white">
+                        <span class="material-symbols-outlined text-[18px]">more_horiz</span>
+                    </button>
+                </div>
+            </div>
+            <!-- Cards Container -->
+            <div class="task-list flex-1 flex flex-col gap-3 overflow-y-auto custom-scrollbar pb-4 pr-1"
+                id="list-${col.id}" data-column-id="${col.id}"></div>
+            <!-- Inline Add Card Form -->
+            <div class="inline-add-form hidden" data-column-id="${col.id}"></div>
+            <button
+                class="add-card-btn flex items-center gap-2 px-2 py-2 mt-2 text-[#5c6b7f] dark:text-gray-400 hover:text-[#111418] dark:hover:text-white hover:bg-[#eff1f3] dark:hover:bg-[#1e2936] rounded-lg transition-colors text-sm font-medium"
+                data-column-id="${col.id}">
+                <span class="material-symbols-outlined text-[18px]">add</span>
+                Add Card
+            </button>
+        </div>
+    `).join('');
 
-        if (statusTasks.length === 0) {
-            list.innerHTML = renderEmptyState();
-        } else {
-            statusTasks.forEach(task => {
-                list.appendChild(createTaskCard(task));
+    // Add "Add List" button at the end
+    const addListBtn = document.createElement('div');
+    addListBtn.className = 'flex flex-col w-80 flex-shrink-0 h-full';
+    addListBtn.innerHTML = `
+        <button onclick="createColumn()" class="flex items-center gap-2 px-4 py-3 bg-[#f1f3f5] dark:bg-[#1a232e] hover:bg-[#e6e8eb] dark:hover:bg-[#253040] rounded-xl text-[#5c6b7f] dark:text-gray-400 font-medium transition-colors w-full text-left">
+            <span class="material-symbols-outlined">add</span>
+            Add another list
+        </button>
+    `;
+    boardEl.appendChild(addListBtn);
+
+    // Re-attach event listeners for the new DOM elements
+    attachBoardEventListeners();
+
+    // Populate tasks
+    columns.forEach(col => {
+        const colTasks = tasks.filter(t => t.column_id === col.id);
+        const listEl = document.getElementById(`list-${col.id}`);
+        const countEl = document.getElementById(`count-${col.id}`);
+
+        if (listEl) {
+            listEl.innerHTML = '';
+            colTasks.forEach(task => {
+                listEl.appendChild(createTaskCard(task));
             });
         }
-
-        // Update counts
-        elements.counts[status].textContent = statusTasks.length;
-        if (elements.headerCounts[status]) {
-            elements.headerCounts[status].textContent = statusTasks.length;
+        if (countEl) {
+            countEl.textContent = colTasks.length;
         }
     });
 }
@@ -453,6 +526,192 @@ async function loadMyTasks() {
     }
 }
 
+async function loadColumns() {
+    if (!activeBoardId) return;
+    try {
+        const response = await authFetch(`${API_URL}/api/boards/${activeBoardId}/columns`);
+        if (!response) return;
+        columns = await response.json();
+    } catch (e) {
+        console.error('Error loading columns:', e);
+        showToast('Failed to load columns', 'error');
+    }
+}
+
+async function createColumn() {
+    const title = prompt("Enter list title:");
+    if (!title) return;
+
+    try {
+        const response = await authFetch(`${API_URL}/api/boards/${activeBoardId}/columns`, {
+            method: 'POST',
+            body: JSON.stringify({
+                title,
+                position: columns.length,
+                color: 'blue-100' // Default color for now
+            })
+        });
+
+        if (!response) return;
+        await loadColumns();
+        renderBoard();
+        showToast('List created', 'success');
+    } catch (e) {
+        console.error('Error creating column:', e);
+        showToast('Failed to create list', 'error');
+    }
+}
+
+async function deleteColumn(columnId) {
+    if (!confirm("Delete this list? All tasks must be moved or deleted first.")) return;
+
+    try {
+        const response = await authFetch(`${API_URL}/api/columns/${columnId}`, {
+            method: 'DELETE'
+        });
+
+        if (response.ok) {
+            await loadColumns();
+            renderBoard();
+            showToast('List deleted', 'success');
+        } else {
+            const data = await response.json();
+            showToast(data.detail || 'Failed to delete list', 'error');
+        }
+    } catch (e) {
+        console.error('Error deleting column:', e);
+        showToast('Make sure list is empty before deleting', 'error');
+    }
+}
+
+// ===== Board Management =====
+async function loadBoards() {
+    if (!activeWorkspaceId) return;
+    try {
+        const response = await authFetch(`${API_URL}/api/workspaces/${activeWorkspaceId}/boards`);
+        if (!response) return;
+        boards = await response.json();
+        // If no active board, select the first one
+        if (!activeBoardId && boards.length > 0) {
+            activeBoardId = boards[0].id;
+        }
+        renderBoardList();
+    } catch (e) {
+        console.error('Error loading boards:', e);
+        showToast('Failed to load boards', 'error');
+    }
+}
+
+function renderBoardList() {
+    elements.boardList.innerHTML = boards.map(board => {
+        const isActive = board.id === activeBoardId;
+        return `
+            <div class="flex items-center gap-1 group/board">
+                <a href="#" class="flex items-center gap-3 px-3 py-2 rounded-lg flex-1 ${isActive ? 'bg-[#eff1f3] dark:bg-[#1e2936] text-[#111418] dark:text-white' : 'text-[#5c6b7f] dark:text-gray-400 hover:bg-[#eff1f3] dark:hover:bg-[#1e2936] hover:text-[#111418] dark:hover:text-white'} transition-colors group"
+                    onclick="switchBoard('${board.id}'); return false;">
+                    <span class="material-symbols-outlined text-[18px] group-hover:text-primary transition-colors ${isActive ? 'text-primary' : ''}">dashboard</span>
+                    <span class="text-sm font-medium truncate">${escapeHtml(board.name)}</span>
+                </a>
+                <button onclick="showDeleteBoardModal('${board.id}', '${escapeHtml(board.name)}'); event.stopPropagation(); return false;" 
+                    class="opacity-0 group-hover/board:opacity-100 p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-900/20 text-[#8a98a8] hover:text-red-600 dark:hover:text-red-400 transition-all" 
+                    title="Delete board">
+                    <span class="material-symbols-outlined text-[16px]">delete</span>
+                </button>
+            </div>
+        `;
+    }).join('');
+}
+
+async function createBoard(name) {
+    if (!activeWorkspaceId) return;
+    try {
+        const response = await authFetch(`${API_URL}/api/boards`, {
+            method: 'POST',
+            body: JSON.stringify({ name, workspace_id: activeWorkspaceId })
+        });
+
+        if (!response) return;
+        const newBoard = await response.json();
+        await loadBoards();
+        switchBoard(newBoard.id);
+        showToast('Board created successfully', 'success');
+        hideCreateBoardModal();
+    } catch (e) {
+        console.error('Error creating board:', e);
+        showToast('Failed to create board', 'error');
+    }
+}
+
+let boardToDeleteId = null;
+
+async function deleteBoard(boardId) {
+    try {
+        const response = await authFetch(`${API_URL}/api/boards/${boardId}`, {
+            method: 'DELETE'
+        });
+
+        if (!response || !response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.detail || 'Failed to delete board');
+        }
+
+        // Remove board from local array
+        boards = boards.filter(b => b.id !== boardId);
+
+        // If we deleted the active board, switch to another board
+        if (activeBoardId === boardId) {
+            if (boards.length > 0) {
+                switchBoard(boards[0].id);
+            } else {
+                activeBoardId = null;
+                tasks = [];
+                columns = [];
+                renderBoard();
+            }
+        }
+
+        renderBoardList();
+        showToast('Board deleted successfully', 'success');
+        hideDeleteBoardModal();
+    } catch (e) {
+        console.error('Error deleting board:', e);
+        showToast(e.message || 'Failed to delete board', 'error');
+    }
+}
+
+function showDeleteBoardModal(boardId, boardName) {
+    boardToDeleteId = boardId;
+    elements.deleteBoardName.textContent = boardName;
+    elements.deleteBoardModal.classList.remove('hidden');
+}
+
+function hideDeleteBoardModal() {
+    elements.deleteBoardModal.classList.add('hidden');
+    boardToDeleteId = null;
+}
+
+function switchBoard(boardId) {
+    if (activeBoardId === boardId) return;
+    activeBoardId = boardId;
+    renderBoardList();
+    loadColumns().then(loadTasks);
+    loadActivities();
+
+    // Switch to board view if not already there
+    switchView('board');
+}
+
+// ===== Create Board Modal =====
+function showCreateBoardModal() {
+    elements.newBoardName.value = '';
+    elements.createBoardModal.classList.remove('hidden');
+    setTimeout(() => elements.newBoardName.focus(), 50);
+}
+
+function hideCreateBoardModal() {
+    elements.createBoardModal.classList.add('hidden');
+}
+
 async function loadWorkspaceMembers() {
     if (!activeWorkspaceId) return;
     try {
@@ -483,8 +742,7 @@ function createTaskCard(task) {
     const dueDate = task.dueDate || task.due_date;
 
     card.innerHTML = `
-        <div class="flex justify-between items-start">
-            <span class="text-[10px] font-medium text-[#8a98a8] ${isDone ? 'line-through' : ''}">${task.id}</span>
+        <div class="flex justify-end items-start">
             ${dueDate ? `<span class="text-[10px] font-medium text-[#5c6b7f] dark:text-gray-400">${formatDate(dueDate)}</span>` : ''}
         </div>
         <span class="text-sm font-medium text-[#111418] dark:text-gray-200 leading-snug ${isDone ? 'line-through decoration-gray-400' : ''}">${escapeHtml(task.title)}</span>
@@ -513,11 +771,12 @@ function createTaskCard(task) {
 }
 
 // ===== Inline Add Card =====
-function showInlineAddForm(status) {
+function showInlineAddForm(columnId) {
     // Hide any existing form
     hideInlineAddForm();
 
-    const column = document.querySelector(`.column[data-status="${status}"]`);
+    const column = document.querySelector(`.column[data-column-id="${columnId}"]`);
+    if (!column) return;
     const formContainer = column.querySelector('.inline-add-form');
     const addBtn = column.querySelector('.add-card-btn');
 
@@ -555,7 +814,7 @@ function showInlineAddForm(status) {
     const prioritySelect = formContainer.querySelector('.inline-priority-select');
     const labelSelect = formContainer.querySelector('.inline-label-select');
 
-    activeInlineForm = { status, formContainer, addBtn };
+    activeInlineForm = { columnId, formContainer, addBtn };
 
     // Focus input
     setTimeout(() => input.focus(), 50);
@@ -566,14 +825,14 @@ function showInlineAddForm(status) {
     createBtn.addEventListener('click', () => {
         const title = input.value.trim();
         if (title) {
-            addTask(title, '', prioritySelect.value, status, labelSelect.value);
+            addTaskToColumn(title, '', prioritySelect.value, columnId, labelSelect.value);
             hideInlineAddForm();
         }
     });
 
     input.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && input.value.trim()) {
-            addTask(input.value.trim(), '', prioritySelect.value, status, labelSelect.value);
+            addTaskToColumn(input.value.trim(), '', prioritySelect.value, columnId, labelSelect.value);
             hideInlineAddForm();
         } else if (e.key === 'Escape') {
             hideInlineAddForm();
@@ -699,7 +958,54 @@ async function addTask(title, description, priority, status, label) {
             body: JSON.stringify(taskData)
         });
 
-        if (!response.ok) throw new Error('Failed to create task');
+        if (!response) return; // authFetch handles redirect
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('Failed to create task:', response.status, errorText);
+            showToast('Failed to create task', 'error');
+            return;
+        }
+
+        const newTask = await response.json();
+        tasks.push(newTask);
+        renderBoard();
+        showKafkaEvent('Task created: ' + newTask.id, 'success');
+
+        // Notification is handled by WebSocket now, but for immediate UI feedback:
+        if (!elements.activityView.classList.contains('hidden')) renderActivityLog();
+    } catch (e) {
+        console.error('Error adding task:', e);
+        showToast('Failed to create task', 'error');
+    }
+}
+
+async function addTaskToColumn(title, description, priority, columnId, label) {
+    if (!activeBoardId) return;
+
+    const taskData = {
+        title,
+        description,
+        priority,
+        label,
+        board_id: activeBoardId,
+        column_id: columnId
+    };
+
+    try {
+        const response = await authFetch(`${API_URL}/api/tasks`, {
+            method: 'POST',
+            body: JSON.stringify(taskData)
+        });
+
+        if (!response) return; // authFetch handles redirect
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('Failed to create task:', response.status, errorText);
+            showToast('Failed to create task', 'error');
+            return;
+        }
 
         const newTask = await response.json();
         tasks.push(newTask);
@@ -739,11 +1045,23 @@ async function updateTask(id, updates) {
     }
 }
 
+// ===== Delete Confirmation =====
+function showDeleteModal(task) {
+    taskToDeleteId = task.id;
+    elements.deleteTaskTitle.textContent = task.title;
+    elements.deleteModal.classList.remove('hidden');
+}
+
+function hideDeleteModal() {
+    elements.deleteModal.classList.add('hidden');
+    taskToDeleteId = null;
+}
+
 async function deleteTask(id) {
     const task = tasks.find(t => t.id === id);
     if (!task) return;
 
-    if (!confirm(`Delete task "${task.title}"?`)) return;
+    // No confirm() call here - modal handles it
 
     try {
         const response = await authFetch(`${API_URL}/api/tasks/${id}`, {
@@ -881,7 +1199,7 @@ function handleIncomingKafkaEvent(kafkaEvent) {
 
     // Sync tasks on relevant events (non-blocking)
     if (['TASK_CREATED', 'TASK_UPDATED', 'TASK_MOVED', 'TASK_DELETED'].includes(kafkaEvent.type)) {
-        loadTasks(); // Fire and forget - don't block
+        loadColumns().then(loadTasks); // Fire and forget - don't block
     }
 }
 
@@ -1131,13 +1449,6 @@ function updateThemeUI(isDark) {
 
 // ===== Event Listeners =====
 function initEventListeners() {
-    // Add card buttons in columns
-    document.querySelectorAll('.add-card-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-            showInlineAddForm(btn.dataset.status);
-        });
-    });
-
     // Panel close buttons
     elements.closePanelBtn.addEventListener('click', closeTaskPanel);
     elements.cancelPanelBtn.addEventListener('click', closeTaskPanel);
@@ -1149,7 +1460,69 @@ function initEventListeners() {
     // Panel delete
     elements.deleteTaskBtn.addEventListener('click', () => {
         if (currentEditingTask) {
-            deleteTask(currentEditingTask.id);
+            showDeleteModal(currentEditingTask);
+        }
+    });
+
+    // Delete Modal
+    elements.cancelDeleteBtn.addEventListener('click', hideDeleteModal);
+    elements.confirmDeleteBtn.addEventListener('click', async () => {
+        if (taskToDeleteId) {
+            await deleteTask(taskToDeleteId);
+            hideDeleteModal();
+            closeTaskPanel(); // Close the side panel too
+        }
+    });
+
+    // Close modal on outside click
+    elements.deleteModal.addEventListener('click', (e) => {
+        if (e.target === elements.deleteModal || e.target.classList.contains('bg-gray-900/50')) {
+            hideDeleteModal();
+        }
+    });
+
+    // Board Creation
+    elements.createBoardBtn.addEventListener('click', showCreateBoardModal);
+    elements.cancelCreateBoardBtn.addEventListener('click', hideCreateBoardModal);
+
+    elements.confirmCreateBoardBtn.addEventListener('click', () => {
+        const name = elements.newBoardName.value.trim();
+        if (name) {
+            createBoard(name);
+        }
+    });
+
+    // Board Deletion
+    elements.cancelDeleteBoardBtn.addEventListener('click', hideDeleteBoardModal);
+    elements.confirmDeleteBoardBtn.addEventListener('click', async () => {
+        if (boardToDeleteId) {
+            await deleteBoard(boardToDeleteId);
+        }
+    });
+
+    // Close create board modal on outside click
+    elements.createBoardModal.addEventListener('click', (e) => {
+        if (e.target === elements.createBoardModal || e.target.classList.contains('bg-gray-900/50')) {
+            hideCreateBoardModal();
+        }
+    });
+
+    // Close delete board modal on outside click
+    elements.deleteBoardModal.addEventListener('click', (e) => {
+        if (e.target === elements.deleteBoardModal || e.target.classList.contains('bg-gray-900/50')) {
+            hideDeleteBoardModal();
+        }
+    });
+
+    // Create board on Enter key
+    elements.newBoardName.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            const name = elements.newBoardName.value.trim();
+            if (name) {
+                createBoard(name);
+            }
+        } else if (e.key === 'Escape') {
+            hideCreateBoardModal();
         }
     });
 
@@ -1158,18 +1531,16 @@ function initEventListeners() {
         if (e.key === 'Escape') {
             if (!elements.taskPanel.classList.contains('hidden')) {
                 closeTaskPanel();
+            } else if (!elements.deleteModal.classList.contains('hidden')) {
+                hideDeleteModal();
+            } else if (!elements.deleteBoardModal.classList.contains('hidden')) {
+                hideDeleteBoardModal();
+            } else if (!elements.createBoardModal.classList.contains('hidden')) {
+                hideCreateBoardModal();
             } else {
                 hideInlineAddForm();
             }
         }
-    });
-
-    // Drag and drop on columns
-    document.querySelectorAll('.column').forEach(column => {
-        column.addEventListener('dragover', handleDragOver);
-        column.addEventListener('dragenter', handleDragEnter);
-        column.addEventListener('dragleave', handleDragLeave);
-        column.addEventListener('drop', handleDrop);
     });
 
     // Navigation
@@ -1188,22 +1559,34 @@ function initEventListeners() {
         switchView('my-tasks');
     });
 
-    // Theme toggle
+    // Theme
     elements.themeToggle.addEventListener('click', toggleTheme);
 
-    // Logout
-    document.getElementById('logoutBtn').addEventListener('click', () => {
-        localStorage.removeItem('access_token');
-        window.location.href = '/login';
-    });
-
-    // Click outside to hide inline form
+    // Global click to close inline forms
     document.addEventListener('click', (e) => {
         if (activeInlineForm && !e.target.closest('.inline-add-form') && !e.target.closest('.add-card-btn') && !e.target.closest('#addTaskBtn')) {
             hideInlineAddForm();
         }
     });
 }
+
+function attachBoardEventListeners() {
+    // Add card buttons in columns
+    document.querySelectorAll('.add-card-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            showInlineAddForm(btn.dataset.columnId); // Use function to show logic
+        });
+    });
+
+    // Drag and drop on columns
+    document.querySelectorAll('.column').forEach(column => {
+        column.addEventListener('dragover', handleDragOver);
+        column.addEventListener('dragenter', handleDragEnter);
+        column.addEventListener('dragleave', handleDragLeave);
+        column.addEventListener('drop', handleDrop);
+    });
+}
+// ===== End of Event Listeners =====
 
 // ===== Utility Functions =====
 function escapeHtml(text) {
@@ -1257,27 +1640,21 @@ async function init() {
         currentUser = await userRes.json();
         console.log('Logged in as:', currentUser.full_name);
 
-        // Fetch Workspaces and Boards
+        // Fetch Workspaces
         const wsRes = await authFetch(`${API_URL}/api/workspaces`);
         const workspaces = await wsRes.json();
 
         if (workspaces.length > 0) {
             activeWorkspaceId = workspaces[0].id;
-            const boardsRes = await authFetch(`${API_URL}/api/workspaces/${workspaces[0].id}/boards`);
-            const boards = await boardsRes.json();
-            if (boards.length > 0) {
-                activeBoardId = boards[0].id;
-                console.log('Active board:', boards[0].name);
-            }
-        }
-
-        if (!activeBoardId) {
-            console.error('No boards found for user');
-            return;
         }
 
         await loadWorkspaceMembers();
-        await loadTasks();
+        await loadBoards(); // Sets activeBoardId and renders list
+
+        if (activeBoardId) {
+            await loadColumns().then(loadTasks);
+        }
+
         initEventListeners();
         connectWebSocket();
         console.log('Kafka Kanban Board initialized');
@@ -1288,3 +1665,4 @@ async function init() {
 
 // Start the application
 document.addEventListener('DOMContentLoaded', init);
+

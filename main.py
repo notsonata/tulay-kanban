@@ -14,20 +14,19 @@ from typing import List, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status
 from fastapi.responses import FileResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, ConfigDict
 from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
 from sqlalchemy.orm import Session
 from jose import JWTError, jwt
 
-import models
-import auth
-from database import engine, get_db
+from backend import models, auth
+from backend.database import engine, get_db
 
 # Create database tables
 models.Base.metadata.create_all(bind=engine)
 
 def seed_db():
-    from database import SessionLocal
+    from backend.database import SessionLocal
     db = SessionLocal()
     try:
         # Check if test user exists
@@ -53,13 +52,57 @@ def seed_db():
 
             # Create default board
             board = models.Board(name="Task Board", workspace_id=ws.id)
-            db.add(board)
+            # Create default columns for the board
+            cols = [
+                models.BoardColumn(board_id=board.id, title="To Do", position=0, color="amber-100"),
+                models.BoardColumn(board_id=board.id, title="In Progress", position=1, color="blue-100"),
+                models.BoardColumn(board_id=board.id, title="Done", position=2, color="green-100")
+            ]
+            db.add_all(cols)
             db.commit()
             print(f"Default user created: {test_email} / password123")
     finally:
         db.close()
 
+def migrate_columns():
+    """Ensure all boards have columns and tasks are linked to them"""
+    from backend.database import SessionLocal
+    db = SessionLocal()
+    try:
+        boards = db.query(models.Board).all()
+        for board in boards:
+            # Check if board has columns
+            if not board.columns:
+                print(f"Migrating board {board.id} to use columns...")
+                cols = [
+                    models.BoardColumn(board_id=board.id, title="To Do", position=0, color="amber-100"),
+                    models.BoardColumn(board_id=board.id, title="In Progress", position=1, color="blue-100"),
+                    models.BoardColumn(board_id=board.id, title="Done", position=2, color="green-100")
+                ]
+                db.add_all(cols)
+                db.commit()
+                # Refresh to get IDs
+                for c in cols: db.refresh(c)
+                
+                # Map status to column_id for existing tasks
+                status_map = {
+                    "todo": cols[0].id,
+                    "inprogress": cols[1].id,
+                    "done": cols[2].id
+                }
+                
+                tasks = db.query(models.Task).filter(models.Task.board_id == board.id).all()
+                for task in tasks:
+                    if not task.column_id and task.status in status_map:
+                        task.column_id = status_map[task.status]
+                db.commit()
+                print(f"Migrated {len(tasks)} tasks for board {board.name}")
+
+    finally:
+        db.close()
+
 seed_db()
+migrate_columns()
 
 # Fix for Windows event loop (ProactorEventLoop support in newer aiokafka versions)
 if sys.platform == 'win32' and sys.version_info < (3, 11):
@@ -167,11 +210,11 @@ class UserCreate(BaseModel):
     full_name: str
 
 class UserResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    
     id: str
     email: str
     full_name: str
-    class Config:
-        from_attributes = True
 
 class Token(BaseModel):
     access_token: str
@@ -191,6 +234,36 @@ class TaskCreate(BaseModel):
     status: str = "todo"
     label: Optional[str] = None
     board_id: str
+    column_id: Optional[str] = None
+    assignee_id: Optional[str] = None
+    due_date: Optional[datetime.datetime] = None
+
+class TaskResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    
+    id: str
+    title: str
+    description: Optional[str] = None
+    priority: str
+    status: str
+    label: Optional[str] = None
+    board_id: str
+    column_id: Optional[str] = None
+    assignee_id: Optional[str] = None
+    due_date: Optional[datetime.datetime] = None
+    events: Optional[list] = []
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+
+class BoardColumnCreate(BaseModel):
+    title: str
+    position: int
+    color: Optional[str] = None
+
+class BoardColumnUpdate(BaseModel):
+    title: Optional[str] = None
+    position: Optional[int] = None
+    color: Optional[str] = None
 
 # ===== Auth Dependency =====
 async def get_current_user(db: Session = Depends(get_db), token: str = Depends(oauth2_scheme)):
@@ -281,7 +354,67 @@ def create_board(board_in: BoardCreate, current_user: models.User = Depends(get_
     db.add(new_board)
     db.commit()
     db.refresh(new_board)
+    
+    # Create default columns
+    cols = [
+        models.BoardColumn(board_id=new_board.id, title="To Do", position=0, color="amber-100"),
+        models.BoardColumn(board_id=new_board.id, title="In Progress", position=1, color="blue-100"),
+        models.BoardColumn(board_id=new_board.id, title="Done", position=2, color="green-100")
+    ]
+    db.add_all(cols)
+    db.commit()
+    
     return new_board
+
+# ===== Column Routes =====
+@app.get("/api/boards/{board_id}/columns")
+def get_board_columns(board_id: str, db: Session = Depends(get_db)):
+    return db.query(models.BoardColumn).filter(models.BoardColumn.board_id == board_id).order_by(models.BoardColumn.position).all()
+
+@app.post("/api/boards/{board_id}/columns")
+def create_column(board_id: str, col_in: BoardColumnCreate, db: Session = Depends(get_db)):
+    # Shift existing columns if necessary or just append (simplified: just append if no position logic)
+    # Actually, we rely on frontend or simple increment for now.
+    new_col = models.BoardColumn(
+        board_id=board_id,
+        title=col_in.title,
+        position=col_in.position,
+        color=col_in.color
+    )
+    db.add(new_col)
+    db.commit()
+    db.refresh(new_col)
+    return new_col
+
+@app.put("/api/columns/{column_id}")
+def update_column(column_id: str, col_in: BoardColumnUpdate, db: Session = Depends(get_db)):
+    col = db.query(models.BoardColumn).filter(models.BoardColumn.id == column_id).first()
+    if not col:
+        raise HTTPException(status_code=404, detail="Column not found")
+    
+    if col_in.title is not None:
+        col.title = col_in.title
+    if col_in.position is not None:
+        col.position = col_in.position
+    if col_in.color is not None:
+        col.color = col_in.color
+        
+    db.commit()
+    return col
+
+@app.delete("/api/columns/{column_id}")
+def delete_column(column_id: str, db: Session = Depends(get_db)):
+    col = db.query(models.BoardColumn).filter(models.BoardColumn.id == column_id).first()
+    if not col:
+        raise HTTPException(status_code=404, detail="Column not found")
+    
+    # Check if column has tasks
+    if db.query(models.Task).filter(models.Task.column_id == column_id).count() > 0:
+        raise HTTPException(status_code=400, detail="Cannot delete column with tasks")
+        
+    db.delete(col)
+    db.commit()
+    return {"ok": True}
 
 @app.get("/api/workspaces/{ws_id}/members")
 def get_workspace_members(ws_id: str, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -295,18 +428,25 @@ def get_workspace_members(ws_id: str, current_user: models.User = Depends(get_cu
             members.append({"id": m.id, "email": m.email, "full_name": m.full_name})
     return members
 
-@app.get("/api/tasks/my")
+@app.get("/api/tasks/my", response_model=List[TaskResponse])
 def get_my_tasks(current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Get all tasks assigned to the current user across all boards."""
     tasks = db.query(models.Task).filter(models.Task.assignee_id == current_user.id).all()
     return tasks
 
 # ===== Task Routes =====
-@app.get("/api/boards/{board_id}/tasks")
+@app.get("/api/boards/{board_id}/tasks", response_model=List[TaskResponse])
 def get_board_tasks(board_id: str, db: Session = Depends(get_db)):
-    return db.query(models.Task).filter(models.Task.board_id == board_id).all()
+    try:
+        tasks = db.query(models.Task).filter(models.Task.board_id == board_id).all()
+        return tasks
+    except Exception as e:
+        print(f"Error loading tasks: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/tasks")
+@app.post("/api/tasks", response_model=TaskResponse)
 async def create_task(task_in: TaskCreate, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
     new_task = models.Task(**task_in.model_dump())
     db.add(new_task)
@@ -338,7 +478,7 @@ async def create_task(task_in: TaskCreate, current_user: models.User = Depends(g
     
     return new_task
 
-@app.put("/api/tasks/{task_id}")
+@app.put("/api/tasks/{task_id}", response_model=TaskResponse)
 async def update_task(task_id: str, updates: dict, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
     task = db.query(models.Task).filter(models.Task.id == task_id).first()
     if not task:

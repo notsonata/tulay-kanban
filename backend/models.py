@@ -1,6 +1,6 @@
 import datetime
 import uuid
-from sqlalchemy import Column, String, DateTime, ForeignKey, Text, JSON, Table
+from sqlalchemy import Column, String, Integer, DateTime, ForeignKey, Text, JSON, Table
 from sqlalchemy.orm import relationship
 from database import Base
 
@@ -51,6 +51,20 @@ class Board(Base):
 
     workspace = relationship("Workspace", back_populates="boards")
     tasks = relationship("Task", back_populates="board", cascade="all, delete-orphan")
+    columns = relationship("BoardColumn", back_populates="board", cascade="all, delete-orphan")
+
+class BoardColumn(Base):
+    __tablename__ = "board_columns"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    board_id = Column(String, ForeignKey("boards.id"))
+    title = Column(String, nullable=False)
+    position = Column(Integer, default=0)
+    color = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    board = relationship("Board", back_populates="columns")
+    tasks = relationship("Task", back_populates="column", cascade="all, delete-orphan")
 
 class Task(Base):
     __tablename__ = "tasks"
@@ -59,7 +73,8 @@ class Task(Base):
     board_id = Column(String, ForeignKey("boards.id"))
     title = Column(String, nullable=False)
     description = Column(Text)
-    status = Column(String, default="todo")
+    column_id = Column(String, ForeignKey("board_columns.id"), nullable=True) # Making nullable for migration
+    status = Column(String, default="todo") # Deprecated, keeping for backward compatibility during migration
     priority = Column(String, default="medium")
     label = Column(String)
     assignee_id = Column(String, ForeignKey("users.id"), nullable=True)
@@ -70,6 +85,7 @@ class Task(Base):
 
     board = relationship("Board", back_populates="tasks")
     assignee = relationship("User", back_populates="tasks")
+    column = relationship("BoardColumn", back_populates="tasks")
 
 class Activity(Base):
     __tablename__ = "activities"
