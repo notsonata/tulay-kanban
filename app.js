@@ -88,12 +88,8 @@ const elements = {
         inprogress: document.getElementById('inprogress-count'),
         done: document.getElementById('done-count')
     },
-    headerCounts: {
-        todo: document.getElementById('headerTodoCount'),
-        inprogress: document.getElementById('headerProgressCount'),
-        done: document.getElementById('headerDoneCount')
-    },
     toastContainer: document.getElementById('toastContainer'),
+    headerStats: document.getElementById('headerStats'),
     // Delete Modal
     deleteModal: document.getElementById('deleteModal'),
     deleteTaskTitle: document.getElementById('deleteTaskTitle'),
@@ -110,7 +106,13 @@ const elements = {
     deleteBoardModal: document.getElementById('deleteBoardModal'),
     deleteBoardName: document.getElementById('deleteBoardName'),
     cancelDeleteBoardBtn: document.getElementById('cancelDeleteBoardBtn'),
-    confirmDeleteBoardBtn: document.getElementById('confirmDeleteBoardBtn')
+    confirmDeleteBoardBtn: document.getElementById('confirmDeleteBoardBtn'),
+    // Delete List Modal
+    deleteListModal: document.getElementById('deleteListModal'),
+    deleteListName: document.getElementById('deleteListName'),
+    deleteListConfirmInput: document.getElementById('deleteListConfirmInput'),
+    cancelDeleteListBtn: document.getElementById('cancelDeleteListBtn'),
+    confirmDeleteListBtn: document.getElementById('confirmDeleteListBtn')
 };
 
 let workspaceMembers = [];
@@ -287,21 +289,37 @@ function renderBoard() {
         return;
     }
 
+    // Update the board title in the header
+    const boardTitleEl = document.getElementById('boardTitle');
+    if (boardTitleEl) {
+        const activeBoard = boards.find(b => b.id === activeBoardId);
+        boardTitleEl.textContent = activeBoard ? activeBoard.name : 'Board';
+    }
+
     boardEl.innerHTML = columns.map(col => `
         <div class="column flex flex-col w-80 flex-shrink-0 h-full rounded-xl transition-colors" data-column-id="${col.id}">
             <div class="flex items-center justify-between mb-3 px-1">
                 <div class="flex items-center gap-2">
                     <span class="flex items-center justify-center size-5 rounded bg-${col.color || 'gray-100'} dark:bg-gray-800 text-[10px] font-bold text-gray-600 dark:text-gray-300" 
                           id="count-${col.id}">0</span>
-                    <h3 class="text-sm font-semibold text-[#111418] dark:text-white">${escapeHtml(col.title)}</h3>
+                    <h3 class="text-sm font-semibold text-[#111418] dark:text-white editable-title" 
+                        data-column-id="${col.id}" 
+                        contenteditable="false">${escapeHtml(col.title)}</h3>
                 </div>
-                <div class="flex items-center gap-1">
-                    <button class="text-[#8a98a8] hover:text-[#111418] dark:hover:text-white" onclick="deleteColumn('${col.id}')">
-                        <span class="material-symbols-outlined text-[16px]">delete</span>
-                    </button>
-                    <button class="text-[#8a98a8] hover:text-[#111418] dark:hover:text-white">
+                <div class="flex items-center gap-1 relative">
+                    <button class="column-menu-btn text-[#8a98a8] hover:text-[#111418] dark:hover:text-white" data-column-id="${col.id}">
                         <span class="material-symbols-outlined text-[18px]">more_horiz</span>
                     </button>
+                    <div class="column-menu hidden absolute right-0 top-8 bg-white dark:bg-[#151e29] rounded-lg shadow-xl border border-[#e5e7eb] dark:border-[#1e2936] py-1 w-48 z-10" data-column-id="${col.id}">
+                        <button onclick="editColumnTitle('${col.id}')" class="w-full flex items-center gap-3 px-4 py-2 text-sm text-[#111418] dark:text-white hover:bg-[#eff1f3] dark:hover:bg-[#1e2936] transition-colors text-left">
+                            <span class="material-symbols-outlined text-[18px]">edit</span>
+                            Rename list
+                        </button>
+                        <button onclick="deleteColumn('${col.id}')" class="w-full flex items-center gap-3 px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors text-left">
+                            <span class="material-symbols-outlined text-[18px]">delete</span>
+                            Delete list
+                        </button>
+                    </div>
                 </div>
             </div>
             <!-- Cards Container -->
@@ -348,6 +366,47 @@ function renderBoard() {
             countEl.textContent = colTasks.length;
         }
     });
+    
+    // Update header stats
+    updateHeaderStats();
+}
+
+function updateHeaderStats() {
+    if (!elements.headerStats) {
+        console.warn('Header stats element not found');
+        return;
+    }
+    
+    if (!activeBoardId || columns.length === 0) {
+        elements.headerStats.innerHTML = '';
+        return;
+    }
+    
+    console.log('Updating header stats:', columns.length, 'columns', tasks.length, 'tasks');
+    
+    // Generate colors dynamically for all columns
+    const colorClasses = [
+        'bg-amber-500',
+        'bg-primary', 
+        'bg-green-500',
+        'bg-purple-500',
+        'bg-pink-500',
+        'bg-indigo-500',
+        'bg-red-500',
+        'bg-yellow-500'
+    ];
+    
+    elements.headerStats.innerHTML = columns.map((col, index) => {
+        const count = tasks.filter(t => t.column_id === col.id).length;
+        const colorClass = colorClasses[index % colorClasses.length];
+        
+        return `
+            <div class="flex items-center gap-1.5">
+                <span class="size-2 rounded-full ${colorClass}"></span>
+                <span class="text-[#5c6b7f] dark:text-gray-400">${escapeHtml(col.title)}: <span class="font-semibold text-[#111418] dark:text-white">${count}</span></span>
+            </div>
+        `;
+    }).join('');
 }
 
 function renderEmptyState() {
@@ -563,8 +622,56 @@ async function createColumn() {
 }
 
 async function deleteColumn(columnId) {
-    if (!confirm("Delete this list? All tasks must be moved or deleted first.")) return;
+    // Close any open menus
+    closeAllColumnMenus();
+    
+    // Show the delete list modal
+    showDeleteListModal(columnId);
+}
 
+function showDeleteListModal(columnId) {
+    const column = columns.find(c => c.id === columnId);
+    if (!column) return;
+    
+    const modal = document.getElementById('deleteListModal');
+    const listNameEl = document.getElementById('deleteListName');
+    const confirmInput = document.getElementById('deleteListConfirmInput');
+    const confirmBtn = document.getElementById('confirmDeleteListBtn');
+    
+    listNameEl.textContent = column.title;
+    confirmInput.value = '';
+    confirmBtn.disabled = true;
+    modal.classList.remove('hidden');
+    
+    // Enable confirm button when input matches list name
+    const inputHandler = () => {
+        confirmBtn.disabled = confirmInput.value !== column.title;
+    };
+    
+    confirmInput.addEventListener('input', inputHandler);
+    
+    // Store columnId for confirmation
+    confirmBtn.onclick = async () => {
+        await confirmDeleteList(columnId);
+        hideDeleteListModal();
+    };
+    
+    // Focus input
+    setTimeout(() => confirmInput.focus(), 100);
+}
+
+function hideDeleteListModal() {
+    const modal = document.getElementById('deleteListModal');
+    const confirmInput = document.getElementById('deleteListConfirmInput');
+    const confirmBtn = document.getElementById('confirmDeleteListBtn');
+    
+    modal.classList.add('hidden');
+    confirmInput.value = '';
+    confirmBtn.disabled = true;
+    confirmBtn.onclick = null;
+}
+
+async function confirmDeleteList(columnId) {
     try {
         const response = await authFetch(`${API_URL}/api/columns/${columnId}`, {
             method: 'DELETE'
@@ -582,6 +689,70 @@ async function deleteColumn(columnId) {
         console.error('Error deleting column:', e);
         showToast('Make sure list is empty before deleting', 'error');
     }
+}
+
+function editColumnTitle(columnId) {
+    closeAllColumnMenus();
+    
+    const titleEl = document.querySelector(`.editable-title[data-column-id="${columnId}"]`);
+    if (!titleEl) return;
+    
+    const originalTitle = titleEl.textContent;
+    titleEl.contentEditable = true;
+    titleEl.focus();
+    
+    // Select all text
+    const range = document.createRange();
+    range.selectNodeContents(titleEl);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    
+    const finishEdit = async () => {
+        titleEl.contentEditable = false;
+        const newTitle = titleEl.textContent.trim();
+        
+        if (!newTitle || newTitle === originalTitle) {
+            titleEl.textContent = originalTitle;
+            return;
+        }
+        
+        try {
+            const response = await authFetch(`${API_URL}/api/columns/${columnId}`, {
+                method: 'PUT',
+                body: JSON.stringify({ title: newTitle })
+            });
+            
+            if (response.ok) {
+                await loadColumns();
+                showToast('List renamed', 'success');
+            } else {
+                titleEl.textContent = originalTitle;
+                showToast('Failed to rename list', 'error');
+            }
+        } catch (e) {
+            console.error('Error renaming column:', e);
+            titleEl.textContent = originalTitle;
+            showToast('Failed to rename list', 'error');
+        }
+    };
+    
+    titleEl.addEventListener('blur', finishEdit, { once: true });
+    titleEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            titleEl.blur();
+        } else if (e.key === 'Escape') {
+            titleEl.textContent = originalTitle;
+            titleEl.blur();
+        }
+    }, { once: true });
+}
+
+function closeAllColumnMenus() {
+    document.querySelectorAll('.column-menu').forEach(menu => {
+        menu.classList.add('hidden');
+    });
 }
 
 // ===== Board Management =====
@@ -1377,10 +1548,10 @@ function handleDrop(e) {
     column.classList.remove('drag-over');
 
     const taskId = e.dataTransfer.getData('text/plain');
-    const newStatus = column.dataset.status;
+    const newColumnId = column.dataset.columnId;
     const taskList = column.querySelector('.task-list');
 
-    if (!taskId || !newStatus || !taskList) return;
+    if (!taskId || !newColumnId || !taskList) return;
 
     // Find drop position
     const afterElement = getDragAfterElement(taskList, e.clientY);
@@ -1390,13 +1561,13 @@ function handleDrop(e) {
     if (taskIndex === -1) return;
 
     const task = tasks[taskIndex];
-    const oldStatus = task.status;
+    const oldColumnId = task.column_id;
 
     // Remove task from array
     tasks.splice(taskIndex, 1);
 
-    // Update status
-    task.status = newStatus;
+    // Update column_id
+    task.column_id = newColumnId;
     task.updatedAt = new Date().toISOString();
 
     // Find insertion position
@@ -1405,18 +1576,18 @@ function handleDrop(e) {
         const afterIndex = tasks.findIndex(t => t.id === afterTaskId);
         tasks.splice(afterIndex, 0, task);
     } else {
-        // Insert at end of the status group
-        const lastIndexOfStatus = tasks.reduce((last, t, i) => t.status === newStatus ? i : last, -1);
-        if (lastIndexOfStatus === -1) {
+        // Insert at end of the column group
+        const lastIndexOfColumn = tasks.reduce((last, t, i) => t.column_id === newColumnId ? i : last, -1);
+        if (lastIndexOfColumn === -1) {
             tasks.push(task);
         } else {
-            tasks.splice(lastIndexOfStatus + 1, 0, task);
+            tasks.splice(lastIndexOfColumn + 1, 0, task);
         }
     }
 
-    // Update status if changed
-    if (oldStatus !== newStatus) {
-        updateTask(taskId, { status: newStatus });
+    // Update column if changed
+    if (oldColumnId !== newColumnId) {
+        updateTask(taskId, { column_id: newColumnId });
     } else {
         // Just reordering in same column - for now we just re-render
         // Real reordering would need a 'position' field in the DB
@@ -1424,7 +1595,7 @@ function handleDrop(e) {
         showKafkaEvent(`Task reordered: ${taskId}`);
     }
 
-    console.log('Kafka Event → task-reordered:', { taskId, status: newStatus });
+    console.log('Kafka Event → task-reordered:', { taskId, column_id: newColumnId });
 }
 
 // ===== Theme Toggle =====
@@ -1500,6 +1671,9 @@ function initEventListeners() {
         }
     });
 
+    // List Deletion
+    elements.cancelDeleteListBtn.addEventListener('click', hideDeleteListModal);
+
     // Close create board modal on outside click
     elements.createBoardModal.addEventListener('click', (e) => {
         if (e.target === elements.createBoardModal || e.target.classList.contains('bg-gray-900/50')) {
@@ -1562,10 +1736,15 @@ function initEventListeners() {
     // Theme
     elements.themeToggle.addEventListener('click', toggleTheme);
 
-    // Global click to close inline forms
+    // Global click to close inline forms and column menus
     document.addEventListener('click', (e) => {
         if (activeInlineForm && !e.target.closest('.inline-add-form') && !e.target.closest('.add-card-btn') && !e.target.closest('#addTaskBtn')) {
             hideInlineAddForm();
+        }
+        
+        // Close column menus when clicking outside
+        if (!e.target.closest('.column-menu') && !e.target.closest('.column-menu-btn')) {
+            closeAllColumnMenus();
         }
     });
 }
@@ -1574,7 +1753,24 @@ function attachBoardEventListeners() {
     // Add card buttons in columns
     document.querySelectorAll('.add-card-btn').forEach(btn => {
         btn.addEventListener('click', () => {
-            showInlineAddForm(btn.dataset.columnId); // Use function to show logic
+            showInlineAddForm(btn.dataset.columnId);
+        });
+    });
+
+    // Column menu buttons
+    document.querySelectorAll('.column-menu-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const columnId = btn.dataset.columnId;
+            const menu = document.querySelector(`.column-menu[data-column-id="${columnId}"]`);
+            
+            // Close other menus
+            document.querySelectorAll('.column-menu').forEach(m => {
+                if (m !== menu) m.classList.add('hidden');
+            });
+            
+            // Toggle this menu
+            menu.classList.toggle('hidden');
         });
     });
 
