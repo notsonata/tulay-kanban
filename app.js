@@ -296,10 +296,11 @@ function renderBoard() {
         boardTitleEl.textContent = activeBoard ? activeBoard.name : 'Board';
     }
 
-    boardEl.innerHTML = columns.map(col => `
-        <div class="column flex flex-col w-80 flex-shrink-0 h-full rounded-xl transition-colors" data-column-id="${col.id}">
+    boardEl.innerHTML = columns.map((col, index) => `
+        <div class="column flex flex-col w-80 flex-shrink-0 h-full rounded-xl transition-colors" data-column-id="${col.id}" draggable="true">
             <div class="flex items-center justify-between mb-3 px-1">
-                <div class="flex items-center gap-2">
+                <div class="flex items-center gap-2 cursor-grab active:cursor-grabbing">
+                    <span class="material-symbols-outlined text-[#8a98a8] text-[18px]">drag_indicator</span>
                     <span class="flex items-center justify-center size-5 rounded bg-${col.color || 'gray-100'} dark:bg-gray-800 text-[10px] font-bold text-gray-600 dark:text-gray-300" 
                           id="count-${col.id}">0</span>
                     <h3 class="text-sm font-semibold text-[#111418] dark:text-white editable-title" 
@@ -311,6 +312,15 @@ function renderBoard() {
                         <span class="material-symbols-outlined text-[18px]">more_horiz</span>
                     </button>
                     <div class="column-menu hidden absolute right-0 top-8 bg-white dark:bg-[#151e29] rounded-lg shadow-xl border border-[#e5e7eb] dark:border-[#1e2936] py-1 w-48 z-10" data-column-id="${col.id}">
+                        <button onclick="moveColumnLeft('${col.id}')" class="w-full flex items-center gap-3 px-4 py-2 text-sm text-[#111418] dark:text-white hover:bg-[#eff1f3] dark:hover:bg-[#1e2936] transition-colors text-left" ${index === 0 ? 'disabled style="opacity: 0.5; cursor: not-allowed;"' : ''}>
+                            <span class="material-symbols-outlined text-[18px]">arrow_back</span>
+                            Move left
+                        </button>
+                        <button onclick="moveColumnRight('${col.id}')" class="w-full flex items-center gap-3 px-4 py-2 text-sm text-[#111418] dark:text-white hover:bg-[#eff1f3] dark:hover:bg-[#1e2936] transition-colors text-left" ${index === columns.length - 1 ? 'disabled style="opacity: 0.5; cursor: not-allowed;"' : ''}>
+                            <span class="material-symbols-outlined text-[18px]">arrow_forward</span>
+                            Move right
+                        </button>
+                        <div class="border-t border-[#e5e7eb] dark:border-[#1e2936] my-1"></div>
                         <button onclick="editColumnTitle('${col.id}')" class="w-full flex items-center gap-3 px-4 py-2 text-sm text-[#111418] dark:text-white hover:bg-[#eff1f3] dark:hover:bg-[#1e2936] transition-colors text-left">
                             <span class="material-symbols-outlined text-[18px]">edit</span>
                             Rename list
@@ -753,6 +763,98 @@ function closeAllColumnMenus() {
     document.querySelectorAll('.column-menu').forEach(menu => {
         menu.classList.add('hidden');
     });
+}
+
+async function moveColumnLeft(columnId) {
+    closeAllColumnMenus();
+    const index = columns.findIndex(c => c.id === columnId);
+    if (index <= 0) return;
+    
+    // Swap positions
+    const temp = columns[index - 1];
+    columns[index - 1] = columns[index];
+    columns[index] = temp;
+    
+    // Update positions in database
+    await updateColumnPositions();
+    renderBoard();
+}
+
+async function moveColumnRight(columnId) {
+    closeAllColumnMenus();
+    const index = columns.findIndex(c => c.id === columnId);
+    if (index < 0 || index >= columns.length - 1) return;
+    
+    // Swap positions
+    const temp = columns[index + 1];
+    columns[index + 1] = columns[index];
+    columns[index] = temp;
+    
+    // Update positions in database
+    await updateColumnPositions();
+    renderBoard();
+}
+
+async function updateColumnPositions() {
+    try {
+        // Update all column positions
+        for (let i = 0; i < columns.length; i++) {
+            await authFetch(`${API_URL}/api/columns/${columns[i].id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ position: i })
+            });
+        }
+    } catch (e) {
+        console.error('Error updating column positions:', e);
+        showToast('Failed to update column order', 'error');
+    }
+}
+
+async function moveColumnLeft(columnId) {
+    closeAllColumnMenus();
+    const index = columns.findIndex(c => c.id === columnId);
+    if (index <= 0) return;
+    
+    // Swap positions
+    const temp = columns[index - 1];
+    columns[index - 1] = columns[index];
+    columns[index] = temp;
+    
+    // Update positions in database
+    await updateColumnPositions();
+    renderBoard();
+}
+
+async function moveColumnRight(columnId) {
+    closeAllColumnMenus();
+    const index = columns.findIndex(c => c.id === columnId);
+    if (index < 0 || index >= columns.length - 1) return;
+    
+    // Swap positions
+    const temp = columns[index + 1];
+    columns[index + 1] = columns[index];
+    columns[index] = temp;
+    
+    // Update positions in database
+    await updateColumnPositions();
+    renderBoard();
+}
+
+async function updateColumnPositions() {
+    try {
+        // Update all column positions
+        for (let i = 0; i < columns.length; i++) {
+            await authFetch(`${API_URL}/api/columns/${columns[i].id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ position: i })
+            });
+        }
+    } catch (e) {
+        console.error('Error updating column positions:', e);
+        showToast('Failed to update column order', 'error');
+    }
 }
 
 // ===== Board Management =====
@@ -1598,6 +1700,118 @@ function handleDrop(e) {
     console.log('Kafka Event → task-reordered:', { taskId, column_id: newColumnId });
 }
 
+// ===== Column Drag and Drop =====
+let draggedColumn = null;
+
+function handleColumnDragStart(e) {
+    // Only allow dragging from the header area (not from task cards)
+    if (!e.target.closest('.column-header') && !e.target.classList.contains('column')) {
+        e.preventDefault();
+        return;
+    }
+    
+    draggedColumn = e.target.closest('.column');
+    if (!draggedColumn) {
+        e.preventDefault();
+        return;
+    }
+    
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', draggedColumn.dataset.columnId);
+    
+    setTimeout(() => {
+        draggedColumn.style.opacity = '0.4';
+    }, 0);
+}
+
+function handleColumnDragEnd(e) {
+    if (draggedColumn) {
+        draggedColumn.style.opacity = '';
+        draggedColumn = null;
+    }
+    
+    // Remove all column drag indicators
+    document.querySelectorAll('.column').forEach(col => {
+        col.classList.remove('column-drag-over-left', 'column-drag-over-right');
+    });
+}
+
+function handleColumnDragOver(e) {
+    if (!draggedColumn) return;
+    
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    
+    const targetColumn = e.target.closest('.column');
+    if (!targetColumn || targetColumn === draggedColumn) return;
+    
+    // Remove all indicators
+    document.querySelectorAll('.column').forEach(col => {
+        col.classList.remove('column-drag-over-left', 'column-drag-over-right');
+    });
+    
+    // Determine which side to show indicator
+    const rect = targetColumn.getBoundingClientRect();
+    const midpoint = rect.left + rect.width / 2;
+    
+    if (e.clientX < midpoint) {
+        targetColumn.classList.add('column-drag-over-left');
+    } else {
+        targetColumn.classList.add('column-drag-over-right');
+    }
+}
+
+function handleColumnDrop(e) {
+    if (!draggedColumn) return;
+    
+    e.preventDefault();
+    e.stopPropagation();
+    
+    const targetColumn = e.target.closest('.column');
+    if (!targetColumn || targetColumn === draggedColumn) {
+        handleColumnDragEnd(e);
+        return;
+    }
+    
+    const draggedId = draggedColumn.dataset.columnId;
+    const targetId = targetColumn.dataset.columnId;
+    
+    const draggedIndex = columns.findIndex(c => c.id === draggedId);
+    const targetIndex = columns.findIndex(c => c.id === targetId);
+    
+    if (draggedIndex === -1 || targetIndex === -1) {
+        handleColumnDragEnd(e);
+        return;
+    }
+    
+    // Determine drop position
+    const rect = targetColumn.getBoundingClientRect();
+    const midpoint = rect.left + rect.width / 2;
+    const dropBefore = e.clientX < midpoint;
+    
+    // Remove dragged column from array
+    const [movedColumn] = columns.splice(draggedIndex, 1);
+    
+    // Calculate new index
+    let newIndex = targetIndex;
+    if (draggedIndex < targetIndex) {
+        newIndex = dropBefore ? targetIndex - 1 : targetIndex;
+    } else {
+        newIndex = dropBefore ? targetIndex : targetIndex + 1;
+    }
+    
+    // Insert at new position
+    columns.splice(newIndex, 0, movedColumn);
+    
+    // Update positions in database and re-render
+    updateColumnPositions().then(() => {
+        renderBoard();
+        showToast('Column moved', 'success');
+    });
+    
+    handleColumnDragEnd(e);
+}
+
 // ===== Theme Toggle =====
 function initTheme() {
     const savedTheme = localStorage.getItem('kafka-kanban-theme');
@@ -1780,6 +1994,12 @@ function attachBoardEventListeners() {
         column.addEventListener('dragenter', handleDragEnter);
         column.addEventListener('dragleave', handleDragLeave);
         column.addEventListener('drop', handleDrop);
+        
+        // Column drag and drop for reordering
+        column.addEventListener('dragstart', handleColumnDragStart);
+        column.addEventListener('dragend', handleColumnDragEnd);
+        column.addEventListener('dragover', handleColumnDragOver);
+        column.addEventListener('drop', handleColumnDrop);
     });
 }
 // ===== End of Event Listeners =====
