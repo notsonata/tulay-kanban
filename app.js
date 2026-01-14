@@ -285,11 +285,49 @@ function renderBoard() {
     const boardEl = document.getElementById('board');
     if (!boardEl) return;
 
-    if (!activeBoardId || columns.length === 0) {
+    // Update Kafka status to ready when board is rendered
+    updateKafkaStatusUI();
+
+    // No boards exist at all
+    if (boards.length === 0) {
+        boardEl.innerHTML = `
+            <div class="flex flex-col items-center justify-center w-full h-full text-[#8a98a8]">
+                <span class="material-symbols-outlined text-5xl mb-4 opacity-30">dashboard_customize</span>
+                <p class="text-base font-medium mb-2">No boards yet</p>
+                <p class="text-sm mb-4">Create your first board to get started</p>
+                <button onclick="document.getElementById('createBoardBtn').click()" 
+                    class="flex items-center gap-2 px-4 py-2 bg-primary hover:bg-blue-600 text-white text-sm font-medium rounded-lg shadow-sm transition-colors">
+                    <span class="material-symbols-outlined text-[18px]">add</span>
+                    Create Board
+                </button>
+            </div>
+        `;
+        return;
+    }
+
+    // No active board selected
+    if (!activeBoardId) {
         boardEl.innerHTML = `
             <div class="flex flex-col items-center justify-center w-full h-full text-[#8a98a8]">
                 <span class="material-symbols-outlined text-4xl mb-4 opacity-30">dashboard</span>
-                <p class="text-sm">Select a board to view tasks</p>
+                <p class="text-sm">Select a board from the sidebar</p>
+            </div>
+        `;
+        return;
+    }
+
+    // Board selected but no columns
+    if (columns.length === 0) {
+        boardEl.innerHTML = `
+            <div class="flex flex-col items-center justify-center w-full h-full text-[#8a98a8]">
+                <span class="material-symbols-outlined text-5xl mb-4 opacity-30">view_week</span>
+                <p class="text-base font-medium mb-2">No lists yet</p>
+                <p class="text-sm mb-4">Create your first list to organize tasks</p>
+                <button onclick="showCreateListModal()" 
+                    class="flex items-center gap-2 px-4 py-2 bg-primary hover:bg-blue-600 text-white text-sm font-medium rounded-lg shadow-sm transition-colors">
+                    <span class="material-symbols-outlined text-[18px]">add</span>
+                    Create List
+                </button>
             </div>
         `;
         return;
@@ -367,7 +405,7 @@ function renderBoard() {
         </button>
     `;
     boardEl.appendChild(addListBtn);
-    
+
     // Add event listener for the add list button
     document.getElementById('addListBtn').addEventListener('click', showCreateListModal);
 
@@ -390,7 +428,7 @@ function renderBoard() {
             countEl.textContent = colTasks.length;
         }
     });
-    
+
     // Update header stats
     updateHeaderStats();
 }
@@ -400,18 +438,18 @@ function updateHeaderStats() {
         console.warn('Header stats element not found');
         return;
     }
-    
+
     if (!activeBoardId || columns.length === 0) {
         elements.headerStats.innerHTML = '';
         return;
     }
-    
+
     console.log('Updating header stats:', columns.length, 'columns', tasks.length, 'tasks');
-    
+
     // Generate colors dynamically for all columns
     const colorClasses = [
         'bg-amber-500',
-        'bg-primary', 
+        'bg-primary',
         'bg-green-500',
         'bg-purple-500',
         'bg-pink-500',
@@ -419,11 +457,11 @@ function updateHeaderStats() {
         'bg-red-500',
         'bg-yellow-500'
     ];
-    
+
     elements.headerStats.innerHTML = columns.map((col, index) => {
         const count = tasks.filter(t => t.column_id === col.id).length;
         const colorClass = colorClasses[index % colorClasses.length];
-        
+
         return `
             <div class="flex items-center gap-1.5">
                 <span class="size-2 rounded-full ${colorClass}"></span>
@@ -661,7 +699,7 @@ async function createColumn() {
 async function deleteColumn(columnId) {
     // Close any open menus
     closeAllColumnMenus();
-    
+
     // Show the delete list modal
     showDeleteListModal(columnId);
 }
@@ -669,30 +707,30 @@ async function deleteColumn(columnId) {
 function showDeleteListModal(columnId) {
     const column = columns.find(c => c.id === columnId);
     if (!column) return;
-    
+
     const modal = document.getElementById('deleteListModal');
     const listNameEl = document.getElementById('deleteListName');
     const confirmInput = document.getElementById('deleteListConfirmInput');
     const confirmBtn = document.getElementById('confirmDeleteListBtn');
-    
+
     listNameEl.textContent = column.title;
     confirmInput.value = '';
     confirmBtn.disabled = true;
     modal.classList.remove('hidden');
-    
+
     // Enable confirm button when input matches list name
     const inputHandler = () => {
         confirmBtn.disabled = confirmInput.value !== column.title;
     };
-    
+
     confirmInput.addEventListener('input', inputHandler);
-    
+
     // Store columnId for confirmation
     confirmBtn.onclick = async () => {
         await confirmDeleteList(columnId);
         hideDeleteListModal();
     };
-    
+
     // Focus input
     setTimeout(() => confirmInput.focus(), 100);
 }
@@ -701,7 +739,7 @@ function hideDeleteListModal() {
     const modal = document.getElementById('deleteListModal');
     const confirmInput = document.getElementById('deleteListConfirmInput');
     const confirmBtn = document.getElementById('confirmDeleteListBtn');
-    
+
     modal.classList.add('hidden');
     confirmInput.value = '';
     confirmBtn.disabled = true;
@@ -730,36 +768,36 @@ async function confirmDeleteList(columnId) {
 
 function editColumnTitle(columnId) {
     closeAllColumnMenus();
-    
+
     const titleEl = document.querySelector(`.editable-title[data-column-id="${columnId}"]`);
     if (!titleEl) return;
-    
+
     const originalTitle = titleEl.textContent;
     titleEl.contentEditable = true;
     titleEl.focus();
-    
+
     // Select all text
     const range = document.createRange();
     range.selectNodeContents(titleEl);
     const sel = window.getSelection();
     sel.removeAllRanges();
     sel.addRange(range);
-    
+
     const finishEdit = async () => {
         titleEl.contentEditable = false;
         const newTitle = titleEl.textContent.trim();
-        
+
         if (!newTitle || newTitle === originalTitle) {
             titleEl.textContent = originalTitle;
             return;
         }
-        
+
         try {
             const response = await authFetch(`${API_URL}/api/columns/${columnId}`, {
                 method: 'PUT',
                 body: JSON.stringify({ title: newTitle })
             });
-            
+
             if (response.ok) {
                 await loadColumns();
                 showToast('List renamed', 'success');
@@ -773,7 +811,7 @@ function editColumnTitle(columnId) {
             showToast('Failed to rename list', 'error');
         }
     };
-    
+
     titleEl.addEventListener('blur', finishEdit, { once: true });
     titleEl.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
@@ -790,7 +828,7 @@ function scrollToAddCard(columnId) {
     closeAllColumnMenus();
     const column = document.querySelector(`.column[data-column-id="${columnId}"]`);
     if (!column) return;
-    
+
     const addBtn = column.querySelector('.add-card-btn');
     if (addBtn) {
         addBtn.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -810,12 +848,12 @@ async function moveColumnLeft(columnId) {
     closeAllColumnMenus();
     const index = columns.findIndex(c => c.id === columnId);
     if (index <= 0) return;
-    
+
     // Swap positions
     const temp = columns[index - 1];
     columns[index - 1] = columns[index];
     columns[index] = temp;
-    
+
     // Update positions in database
     await updateColumnPositions();
     renderBoard();
@@ -825,12 +863,12 @@ async function moveColumnRight(columnId) {
     closeAllColumnMenus();
     const index = columns.findIndex(c => c.id === columnId);
     if (index < 0 || index >= columns.length - 1) return;
-    
+
     // Swap positions
     const temp = columns[index + 1];
     columns[index + 1] = columns[index];
     columns[index] = temp;
-    
+
     // Update positions in database
     await updateColumnPositions();
     renderBoard();
@@ -856,12 +894,12 @@ async function moveColumnLeft(columnId) {
     closeAllColumnMenus();
     const index = columns.findIndex(c => c.id === columnId);
     if (index <= 0) return;
-    
+
     // Swap positions
     const temp = columns[index - 1];
     columns[index - 1] = columns[index];
     columns[index] = temp;
-    
+
     // Update positions in database
     await updateColumnPositions();
     renderBoard();
@@ -871,12 +909,12 @@ async function moveColumnRight(columnId) {
     closeAllColumnMenus();
     const index = columns.findIndex(c => c.id === columnId);
     if (index < 0 || index >= columns.length - 1) return;
-    
+
     // Swap positions
     const temp = columns[index + 1];
     columns[index + 1] = columns[index];
     columns[index] = temp;
-    
+
     // Update positions in database
     await updateColumnPositions();
     renderBoard();
@@ -999,10 +1037,10 @@ function showDeleteBoardModal(boardId, boardName) {
     elements.deleteBoardConfirmInput.value = '';
     elements.confirmDeleteBoardBtn.disabled = true;
     elements.deleteBoardModal.classList.remove('hidden');
-    
+
     // Store board name for validation
     elements.deleteBoardConfirmInput.dataset.boardName = boardName;
-    
+
     // Focus input
     setTimeout(() => elements.deleteBoardConfirmInput.focus(), 100);
 }
@@ -1063,7 +1101,7 @@ function createTaskCard(task) {
         high: 'text-red-600 dark:text-red-400'
     };
 
-    const dueDate = task.dueDate || task.due_date;
+    const dueDate = task.due_date;
 
     card.innerHTML = `
         <div class="flex justify-end items-start">
@@ -1185,7 +1223,16 @@ function openTaskPanel(task) {
     elements.panelStatusSelect.value = task.status;
     elements.panelPrioritySelect.value = task.priority;
     elements.panelLabelSelect.value = task.label;
-    elements.panelDueDate.value = task.dueDate || task.due_date || '';
+
+    // Format due_date for the date input (needs YYYY-MM-DD format)
+    if (task.due_date) {
+        const date = new Date(task.due_date);
+        elements.panelDueDate.value = date.toISOString().split('T')[0];
+        elements.panelDueDate.type = 'date';
+    } else {
+        elements.panelDueDate.value = '';
+        elements.panelDueDate.type = 'text';
+    }
 
     // Populate assignee dropdown
     elements.panelAssigneeSelect.innerHTML = '<option value="">Unassigned</option>';
@@ -1224,7 +1271,7 @@ function saveTaskFromPanel() {
         status: elements.panelStatusSelect.value,
         priority: elements.panelPrioritySelect.value,
         label: elements.panelLabelSelect.value,
-        dueDate: elements.panelDueDate.value,
+        due_date: elements.panelDueDate.value || null,
         assignee_id: elements.panelAssigneeSelect.value || null
     };
 
@@ -1530,11 +1577,16 @@ function handleIncomingKafkaEvent(kafkaEvent) {
 function updateKafkaStatusUI() {
     if (kafkaConnected) {
         elements.kafkaStatus.textContent = 'Kafka Stream Active — Connected';
-        elements.kafkaStatus.classList.remove('text-red-400');
+        elements.kafkaStatus.classList.remove('text-red-400', 'text-[#5c6b7f]');
         elements.kafkaStatus.classList.add('text-green-400');
+    } else if (!activeBoardId) {
+        // No board selected - show neutral status
+        elements.kafkaStatus.textContent = 'Ready — Select or create a board';
+        elements.kafkaStatus.classList.remove('text-green-400', 'text-red-400');
+        elements.kafkaStatus.classList.add('text-[#5c6b7f]');
     } else {
         elements.kafkaStatus.textContent = 'Kafka Stream — Disconnected (local mode)';
-        elements.kafkaStatus.classList.remove('text-green-400');
+        elements.kafkaStatus.classList.remove('text-green-400', 'text-[#5c6b7f]');
         elements.kafkaStatus.classList.add('text-red-400');
     }
 }
@@ -1555,7 +1607,7 @@ function showToast(message, type = 'info') {
         error: 'error'
     };
 
-    toast.className = `${colors[type]} px-4 py-3 rounded-lg shadow-lg border flex items-center gap-3 transform transition-all duration-300 translate-y-8 opacity-0 pointer-events-auto min-w-[300px] max-w-[400px]`;
+    toast.className = `${colors[type]} px-4 py-3 rounded-lg border flex items-center gap-3 transform transition-all duration-300 translate-y-8 opacity-0 pointer-events-auto min-w-[300px] max-w-[400px]`;
 
     toast.innerHTML = `
         <span class="material-symbols-outlined text-[20px]">${icons[type]}</span>
@@ -1761,16 +1813,16 @@ function handleColumnDragStart(e) {
         e.preventDefault();
         return;
     }
-    
+
     draggedColumn = header.closest('.column');
     if (!draggedColumn) {
         e.preventDefault();
         return;
     }
-    
+
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', draggedColumn.dataset.columnId);
-    
+
     setTimeout(() => {
         draggedColumn.style.opacity = '0.4';
     }, 0);
@@ -1781,7 +1833,7 @@ function handleColumnDragEnd(e) {
         draggedColumn.style.opacity = '';
         draggedColumn = null;
     }
-    
+
     // Remove all column drag indicators
     document.querySelectorAll('.column').forEach(col => {
         col.classList.remove('column-drag-over-left', 'column-drag-over-right');
@@ -1790,22 +1842,22 @@ function handleColumnDragEnd(e) {
 
 function handleColumnDragOver(e) {
     if (!draggedColumn) return;
-    
+
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    
+
     const targetColumn = e.target.closest('.column');
     if (!targetColumn || targetColumn === draggedColumn) return;
-    
+
     // Remove all indicators
     document.querySelectorAll('.column').forEach(col => {
         col.classList.remove('column-drag-over-left', 'column-drag-over-right');
     });
-    
+
     // Determine which side to show indicator
     const rect = targetColumn.getBoundingClientRect();
     const midpoint = rect.left + rect.width / 2;
-    
+
     if (e.clientX < midpoint) {
         targetColumn.classList.add('column-drag-over-left');
     } else {
@@ -1815,35 +1867,35 @@ function handleColumnDragOver(e) {
 
 function handleColumnDrop(e) {
     if (!draggedColumn) return;
-    
+
     e.preventDefault();
     e.stopPropagation();
-    
+
     const targetColumn = e.target.closest('.column');
     if (!targetColumn || targetColumn === draggedColumn) {
         handleColumnDragEnd(e);
         return;
     }
-    
+
     const draggedId = draggedColumn.dataset.columnId;
     const targetId = targetColumn.dataset.columnId;
-    
+
     const draggedIndex = columns.findIndex(c => c.id === draggedId);
     const targetIndex = columns.findIndex(c => c.id === targetId);
-    
+
     if (draggedIndex === -1 || targetIndex === -1) {
         handleColumnDragEnd(e);
         return;
     }
-    
+
     // Determine drop position
     const rect = targetColumn.getBoundingClientRect();
     const midpoint = rect.left + rect.width / 2;
     const dropBefore = e.clientX < midpoint;
-    
+
     // Remove dragged column from array
     const [movedColumn] = columns.splice(draggedIndex, 1);
-    
+
     // Calculate new index
     let newIndex = targetIndex;
     if (draggedIndex < targetIndex) {
@@ -1851,16 +1903,16 @@ function handleColumnDrop(e) {
     } else {
         newIndex = dropBefore ? targetIndex : targetIndex + 1;
     }
-    
+
     // Insert at new position
     columns.splice(newIndex, 0, movedColumn);
-    
+
     // Update positions in database and re-render
     updateColumnPositions().then(() => {
         renderBoard();
         showToast('Column moved', 'success');
     });
-    
+
     handleColumnDragEnd(e);
 }
 
@@ -1932,7 +1984,7 @@ function initEventListeners() {
     // List Creation
     elements.cancelCreateListBtn.addEventListener('click', hideCreateListModal);
     elements.confirmCreateListBtn.addEventListener('click', createColumn);
-    
+
     // Allow Enter key to create list
     elements.newListTitle.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') {
@@ -2032,12 +2084,18 @@ function initEventListeners() {
     // Theme
     elements.themeToggle.addEventListener('click', toggleTheme);
 
+    // Logout
+    document.getElementById('logoutBtn').addEventListener('click', () => {
+        localStorage.removeItem('access_token');
+        window.location.href = '/login';
+    });
+
     // Global click to close inline forms and column menus
     document.addEventListener('click', (e) => {
         if (activeInlineForm && !e.target.closest('.inline-add-form') && !e.target.closest('.add-card-btn') && !e.target.closest('#addTaskBtn')) {
             hideInlineAddForm();
         }
-        
+
         // Close column menus when clicking outside
         if (!e.target.closest('.column-menu') && !e.target.closest('.column-menu-btn')) {
             closeAllColumnMenus();
@@ -2059,12 +2117,12 @@ function attachBoardEventListeners() {
             e.stopPropagation();
             const columnId = btn.dataset.columnId;
             const menu = document.querySelector(`.column-menu[data-column-id="${columnId}"]`);
-            
+
             // Close other menus
             document.querySelectorAll('.column-menu').forEach(m => {
                 if (m !== menu) m.classList.add('hidden');
             });
-            
+
             // Toggle this menu
             menu.classList.toggle('hidden');
         });
@@ -2076,12 +2134,12 @@ function attachBoardEventListeners() {
         column.addEventListener('dragenter', handleDragEnter);
         column.addEventListener('dragleave', handleDragLeave);
         column.addEventListener('drop', handleDrop);
-        
+
         // Column reordering drag indicators
         column.addEventListener('dragover', handleColumnDragOver);
         column.addEventListener('drop', handleColumnDrop);
     });
-    
+
     // Column drag and drop for reordering (only from header)
     document.querySelectorAll('.column-drag-handle').forEach(handle => {
         handle.addEventListener('dragstart', handleColumnDragStart);
@@ -2155,10 +2213,13 @@ async function init() {
 
         if (activeBoardId) {
             await loadColumns().then(loadTasks);
+            connectWebSocket();
+        } else {
+            // No boards - render empty state
+            renderBoard();
         }
 
         initEventListeners();
-        connectWebSocket();
         console.log('Kafka Kanban Board initialized');
     } catch (error) {
         console.error('Initialization error:', error);

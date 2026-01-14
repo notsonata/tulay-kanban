@@ -52,6 +52,10 @@ def seed_db():
 
             # Create default board
             board = models.Board(name="Task Board", workspace_id=ws.id)
+            db.add(board)
+            db.commit()
+            db.refresh(board)
+            
             # Create default columns for the board
             cols = [
                 models.BoardColumn(board_id=board.id, title="To Do", position=0, color="amber-100"),
@@ -287,32 +291,8 @@ async def get_current_user(db: Session = Depends(get_db), token: str = Depends(o
 # ===== Auth Routes =====
 @app.post("/api/auth/register", response_model=UserResponse)
 def register(user_in: UserCreate, db: Session = Depends(get_db)):
-    db_user = db.query(models.User).filter(models.User.email == user_in.email).first()
-    if db_user:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    
-    hashed_password = auth.get_password_hash(user_in.password)
-    new_user = models.User(
-        email=user_in.email,
-        hashed_password=hashed_password,
-        full_name=user_in.full_name
-    )
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    
-    # Create default workspace for new user
-    default_ws = models.Workspace(name="My Workspace", owner_id=new_user.id)
-    db.add(default_ws)
-    db.commit()
-    db.refresh(default_ws)
-    
-    # Create default board in the workspace
-    default_board = models.Board(name="Default Board", workspace_id=default_ws.id)
-    db.add(default_board)
-    db.commit()
-    
-    return new_user
+    # Registration is disabled
+    raise HTTPException(status_code=403, detail="Registration is currently disabled")
 
 @app.post("/api/auth/login", response_model=Token)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
