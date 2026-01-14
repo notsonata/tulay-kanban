@@ -1223,7 +1223,16 @@ function openTaskPanel(task) {
     elements.panelStatusSelect.value = task.status;
     elements.panelPrioritySelect.value = task.priority;
     elements.panelLabelSelect.value = task.label;
-    elements.panelDueDate.value = task.due_date || '';
+
+    // Format due_date for the date input (needs YYYY-MM-DD format)
+    if (task.due_date) {
+        const date = new Date(task.due_date);
+        elements.panelDueDate.value = date.toISOString().split('T')[0];
+        elements.panelDueDate.type = 'date';
+    } else {
+        elements.panelDueDate.value = '';
+        elements.panelDueDate.type = 'text';
+    }
 
     // Populate assignee dropdown
     elements.panelAssigneeSelect.innerHTML = '<option value="">Unassigned</option>';
