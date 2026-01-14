@@ -288,6 +288,19 @@ function renderBoard() {
     // Update Kafka status to ready when board is rendered
     updateKafkaStatusUI();
 
+    // Update the board title in the header
+    const boardTitleEl = document.getElementById('boardTitle');
+    if (boardTitleEl) {
+        if (boards.length === 0) {
+            boardTitleEl.textContent = 'No Boards';
+        } else if (!activeBoardId) {
+            boardTitleEl.textContent = 'Select a Board';
+        } else {
+            const activeBoard = boards.find(b => b.id === activeBoardId);
+            boardTitleEl.textContent = activeBoard ? activeBoard.name : 'Board';
+        }
+    }
+
     // No boards exist at all
     if (boards.length === 0) {
         boardEl.innerHTML = `
@@ -331,13 +344,6 @@ function renderBoard() {
             </div>
         `;
         return;
-    }
-
-    // Update the board title in the header
-    const boardTitleEl = document.getElementById('boardTitle');
-    if (boardTitleEl) {
-        const activeBoard = boards.find(b => b.id === activeBoardId);
-        boardTitleEl.textContent = activeBoard ? activeBoard.name : 'Board';
     }
 
     boardEl.innerHTML = columns.map((col, index) => `
@@ -955,6 +961,15 @@ async function loadBoards() {
 }
 
 function renderBoardList() {
+    if (boards.length === 0) {
+        elements.boardList.innerHTML = `
+            <div class="px-3 py-4 text-center text-xs text-[#8a98a8]">
+                No boards yet
+            </div>
+        `;
+        return;
+    }
+
     elements.boardList.innerHTML = boards.map(board => {
         const isActive = board.id === activeBoardId;
         return `
@@ -1015,9 +1030,17 @@ async function deleteBoard(boardId) {
             if (boards.length > 0) {
                 switchBoard(boards[0].id);
             } else {
+                // Close WebSocket if it's open
+                if (websocket) {
+                    websocket.close();
+                    websocket = null;
+                }
+
                 activeBoardId = null;
                 tasks = [];
                 columns = [];
+                kafkaConnected = false;
+                updateKafkaStatusUI();
                 renderBoard();
             }
         }
@@ -1217,12 +1240,27 @@ function openTaskPanel(task) {
 
     // Populate panel
     elements.panelTaskId.textContent = task.id;
-    elements.panelTaskStatus.textContent = statusLabels[task.status];
+    // Find current column title for display
+    const currentCol = columns.find(c => c.id === task.column_id);
+    elements.panelTaskStatus.textContent = currentCol ? currentCol.title : 'Unknown';
     elements.panelTitle.value = task.title;
     elements.panelDescription.value = task.description || '';
-    elements.panelStatusSelect.value = task.status;
     elements.panelPrioritySelect.value = task.priority;
     elements.panelLabelSelect.value = task.label;
+
+    // Populate status dropdown from board columns
+    elements.panelStatusSelect.innerHTML = '';
+    columns.forEach(col => {
+        const option = document.createElement('option');
+        option.value = col.id;
+        option.textContent = col.title;
+        elements.panelStatusSelect.appendChild(option);
+    });
+    elements.panelStatusSelect.value = task.column_id || '';
+
+    // Set min date on due date input to today
+    const today = new Date().toISOString().split('T')[0];
+    elements.panelDueDate.setAttribute('min', today);
 
     // Format due_date for the date input (needs YYYY-MM-DD format)
     if (task.due_date) {
@@ -1265,13 +1303,31 @@ function closeTaskPanel() {
 function saveTaskFromPanel() {
     if (!currentEditingTask) return;
 
+    // Validate due date is not in the past
+    const dueDateValue = elements.panelDueDate.value;
+    if (dueDateValue) {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const selectedDate = new Date(dueDateValue);
+        if (selectedDate < today) {
+            showToast('Due date cannot be in the past', 'error');
+            elements.panelDueDate.focus();
+            return;
+        }
+    }
+
+    // Get the new column_id from the status dropdown
+    const newColumnId = elements.panelStatusSelect.value;
+    const newColumn = columns.find(c => c.id === newColumnId);
+
     const updates = {
         title: elements.panelTitle.value.trim(),
         description: elements.panelDescription.value.trim(),
-        status: elements.panelStatusSelect.value,
+        column_id: newColumnId,
+        status: newColumn ? newColumn.title.toLowerCase().replace(/\s+/g, '') : currentEditingTask.status,
         priority: elements.panelPrioritySelect.value,
         label: elements.panelLabelSelect.value,
-        due_date: elements.panelDueDate.value || null,
+        due_date: dueDateValue || null,
         assignee_id: elements.panelAssigneeSelect.value || null
     };
 
@@ -2101,6 +2157,28 @@ function initEventListeners() {
             closeAllColumnMenus();
         }
     });
+
+    // Horizontal scroll with mouse wheel in board area
+    elements.boardView.addEventListener('wheel', (e) => {
+        const taskList = e.target.closest('.task-list');
+
+        // If inside a task list, check if it can scroll vertically
+        if (taskList) {
+            const canScrollUp = taskList.scrollTop > 0;
+            const canScrollDown = taskList.scrollTop < (taskList.scrollHeight - taskList.clientHeight);
+            const scrollingDown = e.deltaY > 0;
+            const scrollingUp = e.deltaY < 0;
+
+            // Allow vertical scroll if the list can scroll in that direction
+            if ((scrollingDown && canScrollDown) || (scrollingUp && canScrollUp)) {
+                return; // Let it scroll vertically
+            }
+        }
+
+        // Otherwise, scroll horizontally
+        e.preventDefault();
+        elements.boardView.scrollLeft += e.deltaY;
+    }, { passive: false });
 }
 
 function attachBoardEventListeners() {

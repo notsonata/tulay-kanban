@@ -399,10 +399,10 @@ def delete_column(column_id: str, db: Session = Depends(get_db)):
     if not col:
         raise HTTPException(status_code=404, detail="Column not found")
     
-    # Check if column has tasks
-    if db.query(models.Task).filter(models.Task.column_id == column_id).count() > 0:
-        raise HTTPException(status_code=400, detail="Cannot delete column with tasks")
-        
+    # Delete all tasks in this column first (cascade)
+    db.query(models.Task).filter(models.Task.column_id == column_id).delete()
+    
+    # Then delete the column
     db.delete(col)
     db.commit()
     return {"ok": True}
