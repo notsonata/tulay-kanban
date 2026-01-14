@@ -287,6 +287,7 @@ function renderBoard() {
 
     // Update Kafka status to ready when board is rendered
     updateKafkaStatusUI();
+    updateHeaderStats();
 
     // Update the board title in the header
     const boardTitleEl = document.getElementById('boardTitle');
@@ -435,8 +436,6 @@ function renderBoard() {
         }
     });
 
-    // Update header stats
-    updateHeaderStats();
 }
 
 function updateHeaderStats() {
@@ -1027,11 +1026,13 @@ async function deleteBoard(boardId) {
 
         // If we deleted the active board, switch to another board
         if (activeBoardId === boardId) {
+            closeTaskPanel();
             if (boards.length > 0) {
                 switchBoard(boards[0].id);
             } else {
                 // Close WebSocket if it's open
                 if (websocket) {
+                    websocket.onclose = null;
                     websocket.close();
                     websocket = null;
                 }
