@@ -124,6 +124,7 @@ const elements = {
 let workspaceMembers = [];
 let boards = [];
 let columns = [];
+let labels = [];
 let activeWorkspaceId = null;
 let taskToDeleteId = null;
 
@@ -941,6 +942,230 @@ async function updateColumnPositions() {
     }
 }
 
+// ===== Label Management =====
+let globalLabels = [];
+let boardLabels = [];
+
+async function loadLabels() {
+    if (!activeWorkspaceId) return;
+    try {
+        // Load workspace (global) labels
+        const globalResponse = await authFetch(`${API_URL}/api/workspaces/${activeWorkspaceId}/labels`);
+        if (globalResponse && globalResponse.ok) {
+            globalLabels = await globalResponse.json();
+        }
+
+        // Load board-specific labels if board is active
+        if (activeBoardId) {
+            const boardResponse = await authFetch(`${API_URL}/api/boards/${activeBoardId}/labels`);
+            if (boardResponse && boardResponse.ok) {
+                boardLabels = await boardResponse.json();
+            }
+        }
+
+        // Combine for easier access
+        labels = [...globalLabels, ...boardLabels];
+    } catch (e) {
+        console.error('Error loading labels:', e);
+    }
+}
+
+function openLabelManager(scope = 'global') {
+    const modal = document.getElementById('labelManagerModal');
+    modal.classList.remove('hidden');
+    modal.style.display = '';
+    
+    // Set scope selector
+    const scopeSelect = document.getElementById('labelScopeSelect');
+    if (scopeSelect) {
+        scopeSelect.value = scope;
+    }
+
+    renderLabelLists();
+}
+
+function closeLabelManager() {
+    const modal = document.getElementById('labelManagerModal');
+    modal.classList.add('hidden');
+    modal.style.display = 'none';
+    
+    // Clear inputs
+    document.getElementById('labelNameInput').value = '';
+    document.getElementById('labelColorInput').value = '#93c5fd';
+}
+
+function renderLabelLists() {
+    const globalList = document.getElementById('labelListGlobal');
+    const boardList = document.getElementById('labelListBoard');
+
+    if (!globalList || !boardList) return;
+
+    // Render global labels
+    if (globalLabels.length === 0) {
+        globalList.innerHTML = '<p class="text-xs text-gray-400 py-2">No global labels</p>';
+    } else {
+        globalList.innerHTML = globalLabels.map(label => `
+            <div class="flex items-center justify-between p-2 bg-[#fbfcfd] dark:bg-[#0d141c] border border-[#e5e7eb] dark:border-[#1e2936] rounded-lg">
+                <div class="flex items-center gap-2">
+                    <span class="w-4 h-4 rounded" style="background-color: ${label.color || '#93c5fd'}"></span>
+                    <span class="text-sm text-[#111418] dark:text-white">${escapeHtml(label.name)}</span>
+                </div>
+                <button onclick="deleteLabel('${label.id}')" class="text-red-500 hover:text-red-700 transition-colors">
+                    <span class="material-symbols-outlined text-[16px]">delete</span>
+                </button>
+            </div>
+        `).join('');
+    }
+
+    // Render board labels
+    if (boardLabels.length === 0) {
+        boardList.innerHTML = '<p class="text-xs text-gray-400 py-2">No board labels</p>';
+    } else {
+        boardList.innerHTML = boardLabels.map(label => `
+            <div class="flex items-center justify-between p-2 bg-[#fbfcfd] dark:bg-[#0d141c] border border-[#e5e7eb] dark:border-[#1e2936] rounded-lg">
+                <div class="flex items-center gap-2">
+                    <span class="w-4 h-4 rounded" style="background-color: ${label.color || '#93c5fd'}"></span>
+                    <span class="text-sm text-[#111418] dark:text-white">${escapeHtml(label.name)}</span>
+                </div>
+                <button onclick="deleteLabel('${label.id}')" class="text-red-500 hover:text-red-700 transition-colors">
+                    <span class="material-symbols-outlined text-[16px]">delete</span>
+                </button>
+            </div>
+        `).join('');
+    }
+}
+
+async function createLabel() {
+    const nameInput = document.getElementById('labelNameInput');
+    const colorInput = document.getElementById('labelColorInput');
+    const scopeSelect = document.getElementById('labelScopeSelect');
+
+    const name = nameInput.value.trim();
+    const color = colorInput.value;
+    const scope = scopeSelect.value;
+
+    if (!name) {
+        showToast('Label name is required', 'error');
+        nameInput.focus();
+        return;
+    }
+
+    try {
+        let url;
+        if (scope === 'global') {
+            url = `${API_URL}/api/workspaces/${activeWorkspaceId}/labels`;
+        } else {
+            if (!activeBoardId) {
+                showToast('No board selected', 'error');
+                return;
+            }
+            url = `${API_URL}/api/boards/${activeBoardId}/labels`;
+        }
+
+        const response = await authFetch(url, {
+            method: 'POST',
+            body: JSON.stringify({ name, color })
+        });
+
+        if (!response || !response.ok) {
+            throw new Error('Failed to create label');
+        }
+
+        const newLabel = await response.json();
+
+        if (scope === 'global') {
+            globalLabels.push(newLabel);
+        } else {
+            boardLabels.push(newLabel);
+        }
+
+        labels = [...globalLabels, ...boardLabels];
+
+        // Clear inputs
+        nameInput.value = '';
+        colorInput.value = '#93c5fd';
+
+        renderLabelLists();
+        showToast('Label created successfully', 'success');
+    } catch (e) {
+        console.error('Error creating label:', e);
+        showToast('Failed to create label', 'error');
+    }
+}
+
+async function deleteLabel(labelId) {
+    if (!confirm('Delete this label? It will be removed from all tasks.')) {
+        return;
+    }
+
+    try {
+        const response = await authFetch(`${API_URL}/api/labels/${labelId}`, {
+            method: 'DELETE'
+        });
+
+        if (!response || !response.ok) {
+            throw new Error('Failed to delete label');
+        }
+
+        globalLabels = globalLabels.filter(l => l.id !== labelId);
+        boardLabels = boardLabels.filter(l => l.id !== labelId);
+        labels = [...globalLabels, ...boardLabels];
+
+        renderLabelLists();
+        showToast('Label deleted successfully', 'success');
+
+        // Refresh task panel if open
+        if (currentEditingTask) {
+            populateTaskPanelLabels(currentEditingTask);
+        }
+    } catch (e) {
+        console.error('Error deleting label:', e);
+        showToast('Failed to delete label', 'error');
+    }
+}
+
+function populateTaskPanelLabels(task) {
+    const container = elements.panelLabelSelect;
+    if (!container) return;
+
+    container.innerHTML = '';
+
+    if (labels.length === 0) {
+        container.innerHTML = '<p class="text-xs text-gray-400 py-2 text-center">No labels available. Create labels first.</p>';
+        return;
+    }
+
+    const taskLabelIds = task.labels ? task.labels.map(l => l.id) : [];
+
+    labels.forEach(label => {
+        const isChecked = taskLabelIds.includes(label.id);
+        const labelEl = document.createElement('label');
+        labelEl.className = 'flex items-center gap-2 p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded cursor-pointer transition-colors';
+        labelEl.innerHTML = `
+            <input type="checkbox" 
+                   value="${label.id}" 
+                   ${isChecked ? 'checked' : ''}
+                   class="rounded border-gray-300 dark:border-gray-600 text-primary focus:ring-primary">
+            <span class="w-3 h-3 rounded" style="background-color: ${label.color || '#93c5fd'}"></span>
+            <span class="text-sm text-[#111418] dark:text-white flex-1">${escapeHtml(label.name)}</span>
+        `;
+        container.appendChild(labelEl);
+    });
+}
+
+function getSelectedLabelIds() {
+    const container = elements.panelLabelSelect;
+    if (!container) return [];
+    
+    const checkboxes = container.querySelectorAll('input[type="checkbox"]:checked');
+    return Array.from(checkboxes).map(cb => cb.value);
+}
+
+// Expose label management functions to global scope for inline onclick handlers
+window.openLabelManager = openLabelManager;
+window.closeLabelManager = closeLabelManager;
+window.deleteLabel = deleteLabel;
+
 // ===== Board Management =====
 async function loadBoards() {
     if (!activeWorkspaceId) return;
@@ -1082,6 +1307,7 @@ function switchBoard(boardId) {
     renderBoardList();
     loadColumns().then(loadTasks);
     loadActivities();
+    loadLabels(); // Reload labels for the new board
 
     // Switch to board view if not already there
     switchView('board');
@@ -1112,7 +1338,6 @@ async function loadWorkspaceMembers() {
 function createTaskCard(task) {
     const card = document.createElement('div');
     const isDone = task.status === 'done';
-    const labelStyle = labelColors[task.label] || labelColors.frontend;
 
     card.className = `task-card group flex flex-col gap-2 p-3 bg-white dark:bg-[#151e29] rounded-lg border border-[#e5e7eb] dark:border-[#1e2936] hover:border-primary/50 dark:hover:border-primary/50 shadow-sm cursor-pointer transition-all ${isDone ? 'opacity-60 hover:opacity-100' : ''}`;
     card.id = task.id;
@@ -1127,14 +1352,29 @@ function createTaskCard(task) {
 
     const dueDate = task.due_date;
 
+    // Render labels (if task has new label system)
+    let labelsHTML = '';
+    if (task.labels && task.labels.length > 0) {
+        labelsHTML = `<div class="flex flex-wrap gap-1">${task.labels.map(label => `
+            <span class="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium text-white" 
+                  style="background-color: ${label.color || '#93c5fd'}">
+                ${escapeHtml(label.name)}
+            </span>
+        `).join('')}</div>`;
+    } else if (task.label) {
+        // Fallback to old label system
+        const labelStyle = labelColors[task.label] || labelColors.frontend;
+        labelsHTML = `<span class="inline-flex items-center rounded-md ${labelStyle.bg} px-1.5 py-0.5 text-xs font-medium ${labelStyle.text} ring-1 ring-inset ${labelStyle.ring} capitalize">${task.label}</span>`;
+    }
+
     card.innerHTML = `
         <div class="flex justify-end items-start">
             ${dueDate ? `<span class="text-[10px] font-medium text-[#5c6b7f] dark:text-gray-400">${formatDate(dueDate)}</span>` : ''}
         </div>
         <span class="text-sm font-medium text-[#111418] dark:text-gray-200 leading-snug ${isDone ? 'line-through decoration-gray-400' : ''}">${escapeHtml(task.title)}</span>
         ${task.description ? `<p class="text-xs text-[#5c6b7f] dark:text-gray-400 line-clamp-2">${escapeHtml(task.description)}</p>` : ''}
-        <div class="mt-1 flex items-center justify-between">
-            <span class="inline-flex items-center rounded-md ${labelStyle.bg} px-1.5 py-0.5 text-xs font-medium ${labelStyle.text} ring-1 ring-inset ${labelStyle.ring} capitalize">${task.label}</span>
+        <div class="mt-1 flex items-center justify-between gap-2">
+            ${labelsHTML || '<span></span>'}
             <div class="flex items-center gap-1.5 ${priorityColors[task.priority]}">
                 <span class="material-symbols-outlined text-[14px] icon-filled">flag</span>
                 <span class="text-[10px] font-medium capitalize">${task.priority}</span>
@@ -1166,27 +1406,61 @@ function showInlineAddForm(columnId) {
     const formContainer = column.querySelector('.inline-add-form');
     const addBtn = column.querySelector('.add-card-btn');
 
+    // Generate label checkboxes
+    const labelCheckboxes = labels.length === 0 
+        ? '<p class="text-xs text-gray-400 py-2 text-center">No labels available</p>'
+        : labels.map(label => `
+            <label class="flex items-center gap-2 cursor-pointer hover:bg-[#eff1f3] dark:hover:bg-[#1e2936] px-2 py-1.5 rounded transition-colors">
+                <input type="checkbox" value="${label.id}" class="inline-label-checkbox rounded border-gray-300 dark:border-gray-600 text-primary focus:ring-primary w-3.5 h-3.5">
+                <span class="w-3 h-3 rounded" style="background-color: ${label.color || '#93c5fd'}"></span>
+                <span class="text-xs text-[#111418] dark:text-white">${escapeHtml(label.name)}</span>
+            </label>
+        `).join('');
+
     formContainer.innerHTML = `
-        <div class="flex flex-col gap-3 p-3 bg-white dark:bg-[#151e29] rounded-lg border border-primary ring-4 ring-primary/20 shadow-xl mb-3">
-            <input type="text" class="inline-title-input w-full text-sm font-medium text-[#111418] dark:text-white bg-transparent border-none p-0 focus:ring-0 placeholder-gray-400" placeholder="What needs to be done?" autofocus>
-            <div class="flex items-center justify-between">
-                <div class="flex items-center gap-2">
-                    <select class="inline-priority-select text-xs bg-gray-100 dark:bg-gray-800 border-none rounded px-2 py-1 text-gray-700 dark:text-gray-300 focus:ring-0">
+        <div class="flex flex-col gap-3 p-4 bg-white dark:bg-[#151e29] rounded-lg border-2 border-primary ring-4 ring-primary/20 shadow-xl mb-3 min-w-[320px]">
+            <!-- Title Input -->
+            <input type="text" 
+                   class="inline-title-input w-full text-sm font-semibold text-[#111418] dark:text-white bg-transparent border-none p-0 focus:ring-0 placeholder-gray-400" 
+                   placeholder="Task title..." 
+                   autofocus>
+            
+            <!-- Description Textarea -->
+            <textarea 
+                class="inline-description-input w-full text-xs text-[#5c6b7f] dark:text-gray-300 bg-[#fbfcfd] dark:bg-[#0d141c] border border-[#e5e7eb] dark:border-[#1e2936] rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all resize-none placeholder-gray-400 custom-scrollbar"
+                rows="2"
+                placeholder="Add a description (optional)..."></textarea>
+            
+            <!-- Priority and Labels Row -->
+            <div class="flex gap-3">
+                <!-- Priority Selector -->
+                <div class="flex-shrink-0">
+                    <label class="block text-[10px] font-semibold text-[#5c6b7f] dark:text-gray-400 uppercase mb-1.5">Priority</label>
+                    <select class="inline-priority-select text-xs bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded px-2.5 py-1.5 text-gray-700 dark:text-gray-300 focus:ring-2 focus:ring-primary/50 focus:outline-none">
                         <option value="low">Low</option>
                         <option value="medium" selected>Medium</option>
                         <option value="high">High</option>
                     </select>
-                    <select class="inline-label-select text-xs bg-gray-100 dark:bg-gray-800 border-none rounded px-2 py-1 text-gray-700 dark:text-gray-300 focus:ring-0">
-                        <option value="backend">Backend</option>
-                        <option value="frontend" selected>Frontend</option>
-                        <option value="design">Design</option>
-                        <option value="devops">DevOps</option>
-                    </select>
                 </div>
-                <div class="flex items-center gap-2">
-                    <button class="inline-cancel-btn text-xs font-medium text-gray-500 hover:text-[#111418] dark:text-gray-400 dark:hover:text-white px-2 py-1 transition-colors">Cancel</button>
-                    <button class="inline-create-btn bg-primary hover:bg-blue-600 text-white text-xs font-medium px-3 py-1.5 rounded shadow-sm transition-colors">Create</button>
+                
+                <!-- Labels Selector -->
+                <div class="flex-1 min-w-0">
+                    <label class="block text-[10px] font-semibold text-[#5c6b7f] dark:text-gray-400 uppercase mb-1.5">Labels</label>
+                    <div class="inline-label-container flex flex-col gap-0.5 p-2 bg-[#fbfcfd] dark:bg-[#0d141c] border border-[#e5e7eb] dark:border-[#1e2936] rounded-lg max-h-[140px] overflow-y-auto custom-scrollbar">
+                        ${labelCheckboxes}
+                    </div>
                 </div>
+            </div>
+            
+            <!-- Action Buttons -->
+            <div class="flex items-center justify-end gap-2 pt-2 border-t border-[#e5e7eb] dark:border-[#1e2936]">
+                <button class="inline-cancel-btn text-xs font-medium text-[#5c6b7f] dark:text-gray-400 hover:text-[#111418] dark:hover:text-white px-3 py-2 rounded-lg hover:bg-[#eff1f3] dark:hover:bg-[#1e2936] transition-colors">
+                    Cancel
+                </button>
+                <button class="inline-create-btn flex items-center gap-1.5 bg-primary hover:bg-blue-600 text-white text-xs font-semibold px-4 py-2 rounded-lg shadow-sm transition-colors">
+                    <span class="material-symbols-outlined text-[16px]">add</span>
+                    Create Task
+                </button>
             </div>
         </div>
     `;
@@ -1194,33 +1468,46 @@ function showInlineAddForm(columnId) {
     formContainer.classList.remove('hidden');
     addBtn.classList.add('hidden');
 
-    const input = formContainer.querySelector('.inline-title-input');
+    const titleInput = formContainer.querySelector('.inline-title-input');
+    const descriptionInput = formContainer.querySelector('.inline-description-input');
     const cancelBtn = formContainer.querySelector('.inline-cancel-btn');
     const createBtn = formContainer.querySelector('.inline-create-btn');
     const prioritySelect = formContainer.querySelector('.inline-priority-select');
-    const labelSelect = formContainer.querySelector('.inline-label-select');
+    const labelCheckboxElements = formContainer.querySelectorAll('.inline-label-checkbox');
 
     activeInlineForm = { columnId, formContainer, addBtn };
 
     // Focus input
-    setTimeout(() => input.focus(), 50);
+    setTimeout(() => titleInput.focus(), 50);
 
     // Event handlers
     cancelBtn.addEventListener('click', hideInlineAddForm);
 
-    createBtn.addEventListener('click', () => {
-        const title = input.value.trim();
+    const createTask = () => {
+        const title = titleInput.value.trim();
         if (title) {
-            addTaskToColumn(title, '', prioritySelect.value, columnId, labelSelect.value);
+            const description = descriptionInput.value.trim();
+            const selectedLabelIds = Array.from(labelCheckboxElements)
+                .filter(cb => cb.checked)
+                .map(cb => cb.value);
+            addTaskToColumn(title, description, prioritySelect.value, columnId, selectedLabelIds);
+            hideInlineAddForm();
+        }
+    };
+
+    createBtn.addEventListener('click', createTask);
+
+    titleInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            descriptionInput.focus();
+        } else if (e.key === 'Escape') {
             hideInlineAddForm();
         }
     });
 
-    input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && input.value.trim()) {
-            addTaskToColumn(input.value.trim(), '', prioritySelect.value, columnId, labelSelect.value);
-            hideInlineAddForm();
-        } else if (e.key === 'Escape') {
+    descriptionInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
             hideInlineAddForm();
         }
     });
@@ -1247,7 +1534,9 @@ function openTaskPanel(task) {
     elements.panelTitle.value = task.title;
     elements.panelDescription.value = task.description || '';
     elements.panelPrioritySelect.value = task.priority;
-    elements.panelLabelSelect.value = task.label;
+
+    // Populate labels checkboxes
+    populateTaskPanelLabels(task);
 
     // Populate status dropdown from board columns
     elements.panelStatusSelect.innerHTML = '';
@@ -1327,7 +1616,7 @@ function saveTaskFromPanel() {
         column_id: newColumnId,
         status: newColumn ? newColumn.title.toLowerCase().replace(/\s+/g, '') : currentEditingTask.status,
         priority: elements.panelPrioritySelect.value,
-        label: elements.panelLabelSelect.value,
+        label_ids: getSelectedLabelIds(),
         due_date: dueDateValue || null,
         assignee_id: elements.panelAssigneeSelect.value || null
     };
@@ -1368,7 +1657,7 @@ function renderEventLog(task) {
 }
 
 // ===== Task CRUD Operations =====
-async function addTask(title, description, priority, status, label) {
+async function addTask(title, description, priority, status, labelIds = []) {
     if (!activeBoardId) return;
 
     const taskData = {
@@ -1376,7 +1665,7 @@ async function addTask(title, description, priority, status, label) {
         description,
         priority,
         status,
-        label,
+        label_ids: labelIds,
         board_id: activeBoardId
     };
 
@@ -1398,7 +1687,7 @@ async function addTask(title, description, priority, status, label) {
         const newTask = await response.json();
         tasks.push(newTask);
         renderBoard();
-        showKafkaEvent('Task created: ' + newTask.id, 'success');
+        showKafkaEvent('Task created: ' + newTask.title, 'success');
 
         // Notification is handled by WebSocket now, but for immediate UI feedback:
         if (!elements.activityView.classList.contains('hidden')) renderActivityLog();
@@ -1408,14 +1697,14 @@ async function addTask(title, description, priority, status, label) {
     }
 }
 
-async function addTaskToColumn(title, description, priority, columnId, label) {
+async function addTaskToColumn(title, description, priority, columnId, labelIds = []) {
     if (!activeBoardId) return;
 
     const taskData = {
         title,
         description,
         priority,
-        label,
+        label_ids: labelIds,
         board_id: activeBoardId,
         column_id: columnId
     };
@@ -1438,7 +1727,7 @@ async function addTaskToColumn(title, description, priority, columnId, label) {
         const newTask = await response.json();
         tasks.push(newTask);
         renderBoard();
-        showKafkaEvent('Task created: ' + newTask.id, 'success');
+        showKafkaEvent('Task created: ' + newTask.title, 'success');
 
         // Notification is handled by WebSocket now, but for immediate UI feedback:
         if (!elements.activityView.classList.contains('hidden')) renderActivityLog();
@@ -1466,7 +1755,7 @@ async function updateTask(id, updates) {
 
         renderBoard();
         if (!elements.activityView.classList.contains('hidden')) renderActivityLog();
-        showKafkaEvent('Task updated: ' + id, 'success');
+        showKafkaEvent('Task updated: ' + updatedTask.title, 'success');
     } catch (e) {
         console.error('Error updating task:', e);
         showToast('Failed to update task', 'error');
@@ -1502,7 +1791,7 @@ async function deleteTask(id) {
         renderBoard();
         if (!elements.activityView.classList.contains('hidden')) renderActivityLog();
         closeTaskPanel();
-        showKafkaEvent('Task deleted: ' + id, 'success');
+        showKafkaEvent('Task deleted: ' + task.title, 'success');
     } catch (e) {
         console.error('Error deleting task:', e);
         showToast('Failed to delete task', 'error');
@@ -1534,7 +1823,7 @@ function moveTask(taskId, newStatus) {
         saveTasks();
         renderBoard();
         if (!elements.activityView.classList.contains('hidden')) renderActivityLog();
-        showKafkaEvent(`Task moved: ${taskId} (${statusLabels[oldStatus]} → ${statusLabels[newStatus]})`);
+        showKafkaEvent(`Task moved: ${task.title} (${statusLabels[oldStatus]} → ${statusLabels[newStatus]})`);
         sendKafkaEvent('TASK_MOVED', taskId, { from: oldStatus, to: newStatus });
 
         console.log('Kafka Event → task-moved:', { taskId, from: oldStatus, to: newStatus });
@@ -1650,6 +1939,9 @@ function updateKafkaStatusUI() {
 
 // ===== Toast Notifications =====
 function showToast(message, type = 'info') {
+    // Remove any existing toasts to prevent stacking
+    elements.toastContainer.innerHTML = '';
+
     const toast = document.createElement('div');
 
     const colors = {
@@ -1854,7 +2146,7 @@ function handleDrop(e) {
         // Just reordering in same column - for now we just re-render
         // Real reordering would need a 'position' field in the DB
         renderBoard();
-        showKafkaEvent(`Task reordered: ${taskId}`);
+        showKafkaEvent(`Task reordered: ${task.title}`);
     }
 
     console.log('Kafka Event → task-reordered:', { taskId, column_id: newColumnId });
@@ -2114,8 +2406,8 @@ function initEventListeners() {
                 hideCreateListModal();
             } else if (!elements.createBoardModal.classList.contains('hidden')) {
                 hideCreateBoardModal();
-            } else if (!elements.createBoardModal.classList.contains('hidden')) {
-                hideCreateBoardModal();
+            } else if (document.getElementById('labelManagerModal') && !document.getElementById('labelManagerModal').classList.contains('hidden')) {
+                closeLabelManager();
             } else {
                 hideInlineAddForm();
             }
@@ -2146,6 +2438,42 @@ function initEventListeners() {
         localStorage.removeItem('access_token');
         window.location.href = '/login';
     });
+
+    // Label Manager
+    const labelManagerBtn = document.getElementById('labelManagerBtn');
+    if (labelManagerBtn) {
+        labelManagerBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            openLabelManager('global');
+        });
+    }
+
+    const labelCloseBtn = document.getElementById('labelCloseBtn');
+    if (labelCloseBtn) {
+        labelCloseBtn.addEventListener('click', closeLabelManager);
+    }
+
+    const labelCreateBtn = document.getElementById('labelCreateBtn');
+    if (labelCreateBtn) {
+        labelCreateBtn.addEventListener('click', createLabel);
+    }
+
+    const panelLabelNew = document.getElementById('panelLabelNew');
+    if (panelLabelNew) {
+        panelLabelNew.addEventListener('click', () => {
+            openLabelManager('board');
+        });
+    }
+
+    // Close label manager modal on outside click
+    const labelManagerModal = document.getElementById('labelManagerModal');
+    if (labelManagerModal) {
+        labelManagerModal.addEventListener('click', (e) => {
+            if (e.target === labelManagerModal || e.target.classList.contains('bg-gray-900/50')) {
+                closeLabelManager();
+            }
+        });
+    }
 
     // Global click to close inline forms and column menus
     document.addEventListener('click', (e) => {
@@ -2289,6 +2617,7 @@ async function init() {
 
         await loadWorkspaceMembers();
         await loadBoards(); // Sets activeBoardId and renders list
+        await loadLabels(); // Load workspace and board labels
 
         if (activeBoardId) {
             await loadColumns().then(loadTasks);
