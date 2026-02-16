@@ -119,17 +119,6 @@ const elements = {
     deleteListConfirmInput: document.getElementById('deleteListConfirmInput'),
     cancelDeleteListBtn: document.getElementById('cancelDeleteListBtn'),
     confirmDeleteListBtn: document.getElementById('confirmDeleteListBtn')
-    ,
-    // Label Manager
-    labelManagerBtn: document.getElementById('labelManagerBtn'),
-    labelManagerModal: document.getElementById('labelManagerModal'),
-    labelScopeSelect: document.getElementById('labelScopeSelect'),
-    labelNameInput: document.getElementById('labelNameInput'),
-    labelColorInput: document.getElementById('labelColorInput'),
-    labelCreateBtn: document.getElementById('labelCreateBtn'),
-    labelCloseBtn: document.getElementById('labelCloseBtn'),
-    labelListGlobal: document.getElementById('labelListGlobal'),
-    labelListBoard: document.getElementById('labelListBoard')
 };
 
 let workspaceMembers = [];
@@ -137,9 +126,6 @@ let boards = [];
 let columns = [];
 let activeWorkspaceId = null;
 let taskToDeleteId = null;
-let workspaceLabels = [];
-let boardLabels = [];
-let combinedLabels = [];
 
 // ===== Label Colors =====
 const labelColors = {
@@ -164,61 +150,6 @@ const labelColors = {
         ring: 'ring-gray-500/10 dark:ring-gray-400/20'
     }
 };
-
-function updateCombinedLabels() {
-    combinedLabels = [...workspaceLabels, ...boardLabels];
-    console.log('updateCombinedLabels - total:', combinedLabels.length, 'workspace:', workspaceLabels.length, 'board:', boardLabels.length);
-}
-
-function getLabelById(labelId) {
-    return combinedLabels.find(label => label.id === labelId);
-}
-
-function normalizeHexColor(color) {
-    if (!color || typeof color !== 'string') return null;
-    const trimmed = color.trim();
-    if (!trimmed.startsWith('#')) return null;
-    if (trimmed.length === 4) {
-        return `#${trimmed[1]}${trimmed[1]}${trimmed[2]}${trimmed[2]}${trimmed[3]}${trimmed[3]}`;
-    }
-    return trimmed.length === 7 ? trimmed : null;
-}
-
-function getReadableTextColor(color) {
-    const hex = normalizeHexColor(color);
-    if (!hex) return '#111418';
-    const r = parseInt(hex.slice(1, 3), 16);
-    const g = parseInt(hex.slice(3, 5), 16);
-    const b = parseInt(hex.slice(5, 7), 16);
-    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-    return luminance > 0.6 ? '#111418' : '#f8fafc';
-}
-
-function renderLabelPill(label) {
-    if (!label) return '';
-    const legacyStyle = labelColors[label.name?.toLowerCase()] || labelColors.frontend;
-    const hex = normalizeHexColor(label.color);
-    if (!hex) {
-        return `
-            <span class="inline-flex items-center rounded-md ${legacyStyle.bg} px-1.5 py-0.5 text-xs font-medium ${legacyStyle.text} ring-1 ring-inset ${legacyStyle.ring} capitalize">
-                ${escapeHtml(label.name || '')}
-            </span>
-        `;
-    }
-    const textColor = getReadableTextColor(hex);
-    return `
-        <span class="inline-flex items-center rounded-md px-1.5 py-0.5 text-xs font-medium ring-1 ring-inset" style="background-color: ${hex}; color: ${textColor}; border-color: rgba(15, 23, 42, 0.12);">
-            ${escapeHtml(label.name || '')}
-        </span>
-    `;
-}
-
-function getTaskLabels(task) {
-    if (!task) return [];
-    if (Array.isArray(task.labels) && task.labels.length > 0) return task.labels;
-    if (task.label) return [{ name: task.label, color: null }];
-    return [];
-}
 
 // ===== Status Labels =====
 const statusLabels = {
@@ -654,52 +585,6 @@ function renderActivityLog() {
             </div>
         `;
     }).join('');
-}
-
-function getSelectedLabelIds(task) {
-    if (!task) return [];
-    if (Array.isArray(task.labels)) return task.labels.map(label => label.id).filter(Boolean);
-    return [];
-}
-
-function getLabelOptionsHtml(selectedIds = []) {
-    const selected = new Set(selectedIds);
-    console.log('getLabelOptionsHtml - combinedLabels:', combinedLabels.length, 'selectedIds:', selectedIds);
-    if (!combinedLabels || combinedLabels.length === 0) {
-        return '<option value="" disabled>No labels available - Create labels first</option>';
-    }
-    return combinedLabels.map(label => {
-        const scopeText = label.board_id ? 'Board' : 'Global';
-        return `
-            <option value="${label.id}" ${selected.has(label.id) ? 'selected' : ''}>
-                ${escapeHtml(label.name)} (${scopeText})
-            </option>
-        `;
-    }).join('');
-}
-
-function refreshLabelSelects() {
-    console.log('refreshLabelSelects - combinedLabels:', combinedLabels.length);
-    if (elements.panelLabelSelect) {
-        const selectedIds = getSelectedLabelIds(currentEditingTask);
-        console.log('Refreshing panel label select, selectedIds:', selectedIds);
-        elements.panelLabelSelect.innerHTML = getLabelOptionsHtml(selectedIds);
-        setMultiSelectValues(elements.panelLabelSelect, selectedIds);
-    }
-
-    if (activeInlineForm && activeInlineForm.labelSelect) {
-        const selectedIds = Array.from(activeInlineForm.labelSelect.selectedOptions).map(opt => opt.value);
-        activeInlineForm.labelSelect.innerHTML = getLabelOptionsHtml(selectedIds);
-        setMultiSelectValues(activeInlineForm.labelSelect, selectedIds);
-    }
-}
-
-function setMultiSelectValues(selectEl, values) {
-    if (!selectEl) return;
-    const selected = new Set(values);
-    Array.from(selectEl.options).forEach(option => {
-        option.selected = selected.has(option.value);
-    });
 }
 
 async function loadMyTasks() {
@@ -1191,13 +1076,11 @@ function hideDeleteBoardModal() {
     boardToDeleteId = null;
 }
 
-async function switchBoard(boardId) {
+function switchBoard(boardId) {
     if (activeBoardId === boardId) return;
     activeBoardId = boardId;
     renderBoardList();
-    await loadBoardLabels();
-    await loadColumns();
-    await loadTasks();
+    loadColumns().then(loadTasks);
     loadActivities();
 
     // Switch to board view if not already there
@@ -1226,203 +1109,10 @@ async function loadWorkspaceMembers() {
     }
 }
 
-async function loadWorkspaceLabels() {
-    if (!activeWorkspaceId) {
-        console.warn('loadWorkspaceLabels - no activeWorkspaceId');
-        return;
-    }
-    try {
-        const response = await authFetch(`${API_URL}/api/workspaces/${activeWorkspaceId}/labels`);
-        if (!response) return;
-        workspaceLabels = await response.json();
-        console.log('Loaded workspace labels:', workspaceLabels.length);
-        updateCombinedLabels();
-        refreshLabelSelects();
-        renderLabelManagerLists();
-    } catch (e) {
-        console.error('Error loading workspace labels:', e);
-    }
-}
-
-async function loadBoardLabels() {
-    if (!activeBoardId) {
-        console.warn('loadBoardLabels - no activeBoardId');
-        return;
-    }
-    try {
-        const response = await authFetch(`${API_URL}/api/boards/${activeBoardId}/labels`);
-        if (!response) return;
-        boardLabels = await response.json();
-        console.log('Loaded board labels:', boardLabels.length);
-        updateCombinedLabels();
-        refreshLabelSelects();
-        renderLabelManagerLists();
-    } catch (e) {
-        console.error('Error loading board labels:', e);
-    }
-}
-
-function openLabelManager(scope = 'global') {
-    console.log('Opening label manager, scope:', scope);
-    
-    // Try to get the element fresh if not cached
-    const modalElement = elements.labelManagerModal || document.getElementById('labelManagerModal');
-    console.log('Modal element:', modalElement);
-    
-    if (!modalElement) {
-        console.error('labelManagerModal element not found in DOM');
-        alert('Label manager modal not found. Please refresh the page.');
-        return;
-    }
-    
-    try {
-        modalElement.classList.remove('hidden');
-        modalElement.style.display = 'flex';
-        console.log('Modal visible now, classes:', modalElement.className);
-        console.log('Modal display style:', modalElement.style.display);
-        
-        const scopeSelect = elements.labelScopeSelect || document.getElementById('labelScopeSelect');
-        if (scopeSelect) {
-            scopeSelect.value = scope;
-        }
-        
-        const nameInput = elements.labelNameInput || document.getElementById('labelNameInput');
-        if (nameInput) {
-            nameInput.value = '';
-            setTimeout(() => {
-                if (nameInput) {
-                    nameInput.focus();
-                }
-            }, 100);
-        }
-        
-        const colorInput = elements.labelColorInput || document.getElementById('labelColorInput');
-        if (colorInput) {
-            colorInput.value = '#93c5fd';
-        }
-        
-        renderLabelManagerLists();
-        console.log('Label manager opened successfully');
-    } catch (e) {
-        console.error('Error opening label manager:', e);
-        showToast('Error opening label manager', 'error');
-    }
-}
-
-function closeLabelManager() {
-    if (!elements.labelManagerModal) return;
-    elements.labelManagerModal.classList.add('hidden');
-    elements.labelManagerModal.style.display = 'none';
-}
-
-// Make label manager functions globally accessible for inline onclick handlers
-window.openLabelManager = openLabelManager;
-window.closeLabelManager = closeLabelManager;
-
-function renderLabelManagerLists() {
-    console.log('renderLabelManagerLists called');
-    if (!elements.labelListGlobal || !elements.labelListBoard) {
-        console.warn('Label list containers not found:', {
-            global: !!elements.labelListGlobal,
-            board: !!elements.labelListBoard
-        });
-        return;
-    }
-
-    try {
-        const renderList = (labels, container, emptyMessage) => {
-            if (!labels || labels.length === 0) {
-                container.innerHTML = `
-                    <div class="text-xs text-[#8a98a8]">${emptyMessage}</div>
-                `;
-                return;
-            }
-
-            container.innerHTML = labels.map(label => {
-                const pill = renderLabelPill(label);
-                return `
-                    <div class="flex items-center justify-between gap-2">
-                        <div class="flex items-center gap-2">${pill}</div>
-                        <button class="text-xs text-red-600 hover:text-red-700" data-label-id="${label.id}">Delete</button>
-                    </div>
-                `;
-            }).join('');
-
-            container.querySelectorAll('button[data-label-id]').forEach(btn => {
-                btn.addEventListener('click', async () => {
-                    await deleteLabel(btn.dataset.labelId);
-                });
-            });
-        };
-
-        console.log('Rendering global labels:', workspaceLabels.length);
-        console.log('Rendering board labels:', boardLabels.length);
-        renderList(workspaceLabels, elements.labelListGlobal, 'No global labels yet.');
-        renderList(boardLabels, elements.labelListBoard, 'No board labels yet.');
-    } catch (e) {
-        console.error('Error rendering label lists:', e);
-    }
-}
-
-async function createLabel() {
-    const name = elements.labelNameInput?.value.trim();
-    if (!name) return;
-
-    const color = elements.labelColorInput?.value || null;
-    const scope = elements.labelScopeSelect?.value || 'global';
-
-    if (scope === 'board' && !activeBoardId) {
-        showToast('Select a board to create board labels', 'error');
-        return;
-    }
-
-    try {
-        if (scope === 'global') {
-            await authFetch(`${API_URL}/api/workspaces/${activeWorkspaceId}/labels`, {
-                method: 'POST',
-                body: JSON.stringify({ name, color })
-            });
-            await loadWorkspaceLabels();
-        } else {
-            await authFetch(`${API_URL}/api/boards/${activeBoardId}/labels`, {
-                method: 'POST',
-                body: JSON.stringify({ name, color })
-            });
-            await loadBoardLabels();
-        }
-
-        if (elements.labelNameInput) {
-            elements.labelNameInput.value = '';
-        }
-        showToast('Label created', 'success');
-    } catch (e) {
-        console.error('Error creating label:', e);
-        showToast('Failed to create label', 'error');
-    }
-}
-
-async function deleteLabel(labelId) {
-    if (!labelId) return;
-    try {
-        const response = await authFetch(`${API_URL}/api/labels/${labelId}`, { method: 'DELETE' });
-        if (!response || !response.ok) {
-            throw new Error('Failed to delete label');
-        }
-
-        await loadWorkspaceLabels();
-        await loadBoardLabels();
-        showToast('Label deleted', 'success');
-    } catch (e) {
-        console.error('Error deleting label:', e);
-        showToast('Failed to delete label', 'error');
-    }
-}
-
 function createTaskCard(task) {
     const card = document.createElement('div');
     const isDone = task.status === 'done';
-    const labels = getTaskLabels(task);
-    const labelHtml = labels.map(label => renderLabelPill(label)).join('');
+    const labelStyle = labelColors[task.label] || labelColors.frontend;
 
     card.className = `task-card group flex flex-col gap-2 p-3 bg-white dark:bg-[#151e29] rounded-lg border border-[#e5e7eb] dark:border-[#1e2936] hover:border-primary/50 dark:hover:border-primary/50 shadow-sm cursor-pointer transition-all ${isDone ? 'opacity-60 hover:opacity-100' : ''}`;
     card.id = task.id;
@@ -1444,9 +1134,7 @@ function createTaskCard(task) {
         <span class="text-sm font-medium text-[#111418] dark:text-gray-200 leading-snug ${isDone ? 'line-through decoration-gray-400' : ''}">${escapeHtml(task.title)}</span>
         ${task.description ? `<p class="text-xs text-[#5c6b7f] dark:text-gray-400 line-clamp-2">${escapeHtml(task.description)}</p>` : ''}
         <div class="mt-1 flex items-center justify-between">
-            <div class="flex flex-wrap items-center gap-1">
-                ${labelHtml}
-            </div>
+            <span class="inline-flex items-center rounded-md ${labelStyle.bg} px-1.5 py-0.5 text-xs font-medium ${labelStyle.text} ring-1 ring-inset ${labelStyle.ring} capitalize">${task.label}</span>
             <div class="flex items-center gap-1.5 ${priorityColors[task.priority]}">
                 <span class="material-symbols-outlined text-[14px] icon-filled">flag</span>
                 <span class="text-[10px] font-medium capitalize">${task.priority}</span>
@@ -1481,23 +1169,21 @@ function showInlineAddForm(columnId) {
     formContainer.innerHTML = `
         <div class="flex flex-col gap-3 p-3 bg-white dark:bg-[#151e29] rounded-lg border border-primary ring-4 ring-primary/20 shadow-xl mb-3">
             <input type="text" class="inline-title-input w-full text-sm font-medium text-[#111418] dark:text-white bg-transparent border-none p-0 focus:ring-0 placeholder-gray-400" placeholder="What needs to be done?" autofocus>
-            <div class="flex flex-col gap-2">
+            <div class="flex items-center justify-between">
                 <div class="flex items-center gap-2">
-                    <label class="text-xs text-[#5c6b7f] w-16">Priority:</label>
-                    <select class="inline-priority-select flex-1 text-xs bg-gray-100 dark:bg-gray-800 border-none rounded px-2 py-1 text-gray-700 dark:text-gray-300 focus:ring-0">
+                    <select class="inline-priority-select text-xs bg-gray-100 dark:bg-gray-800 border-none rounded px-2 py-1 text-gray-700 dark:text-gray-300 focus:ring-0">
                         <option value="low">Low</option>
                         <option value="medium" selected>Medium</option>
                         <option value="high">High</option>
                     </select>
-                </div>
-                <div class="flex flex-col gap-1">
-                    <label class="text-xs text-[#5c6b7f]">Labels (Ctrl/Cmd to select multiple):</label>
-                    <select class="inline-label-select text-xs bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded px-2 py-1 text-gray-700 dark:text-gray-300 focus:ring-0" multiple size="3">
-                        ${getLabelOptionsHtml()}
+                    <select class="inline-label-select text-xs bg-gray-100 dark:bg-gray-800 border-none rounded px-2 py-1 text-gray-700 dark:text-gray-300 focus:ring-0">
+                        <option value="backend">Backend</option>
+                        <option value="frontend" selected>Frontend</option>
+                        <option value="design">Design</option>
+                        <option value="devops">DevOps</option>
                     </select>
-                    <button type="button" class="inline-label-new self-start text-xs font-medium text-primary hover:text-blue-600 transition-colors whitespace-nowrap">+ Create New Label</button>
                 </div>
-                <div class="flex items-center justify-end gap-2 pt-2">
+                <div class="flex items-center gap-2">
                     <button class="inline-cancel-btn text-xs font-medium text-gray-500 hover:text-[#111418] dark:text-gray-400 dark:hover:text-white px-2 py-1 transition-colors">Cancel</button>
                     <button class="inline-create-btn bg-primary hover:bg-blue-600 text-white text-xs font-medium px-3 py-1.5 rounded shadow-sm transition-colors">Create</button>
                 </div>
@@ -1513,9 +1199,8 @@ function showInlineAddForm(columnId) {
     const createBtn = formContainer.querySelector('.inline-create-btn');
     const prioritySelect = formContainer.querySelector('.inline-priority-select');
     const labelSelect = formContainer.querySelector('.inline-label-select');
-    const newLabelBtn = formContainer.querySelector('.inline-label-new');
 
-    activeInlineForm = { columnId, formContainer, addBtn, labelSelect };
+    activeInlineForm = { columnId, formContainer, addBtn };
 
     // Focus input
     setTimeout(() => input.focus(), 50);
@@ -1526,25 +1211,18 @@ function showInlineAddForm(columnId) {
     createBtn.addEventListener('click', () => {
         const title = input.value.trim();
         if (title) {
-            const labelIds = Array.from(labelSelect.selectedOptions).map(opt => opt.value);
-            addTaskToColumn(title, '', prioritySelect.value, columnId, labelIds);
+            addTaskToColumn(title, '', prioritySelect.value, columnId, labelSelect.value);
             hideInlineAddForm();
         }
     });
 
     input.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && input.value.trim()) {
-            const labelIds = Array.from(labelSelect.selectedOptions).map(opt => opt.value);
-            addTaskToColumn(input.value.trim(), '', prioritySelect.value, columnId, labelIds);
+            addTaskToColumn(input.value.trim(), '', prioritySelect.value, columnId, labelSelect.value);
             hideInlineAddForm();
         } else if (e.key === 'Escape') {
             hideInlineAddForm();
         }
-    });
-
-    newLabelBtn.addEventListener('click', (e) => {
-        e.preventDefault();
-        openLabelManager('board');
     });
 }
 
@@ -1569,12 +1247,7 @@ function openTaskPanel(task) {
     elements.panelTitle.value = task.title;
     elements.panelDescription.value = task.description || '';
     elements.panelPrioritySelect.value = task.priority;
-    
-    // Refresh and populate label select
-    const selectedIds = getSelectedLabelIds(task);
-    console.log('openTaskPanel - selectedIds:', selectedIds, 'task.labels:', task.labels);
-    refreshLabelSelects();
-    setMultiSelectValues(elements.panelLabelSelect, selectedIds);
+    elements.panelLabelSelect.value = task.label;
 
     // Populate status dropdown from board columns
     elements.panelStatusSelect.innerHTML = '';
@@ -1654,7 +1327,7 @@ function saveTaskFromPanel() {
         column_id: newColumnId,
         status: newColumn ? newColumn.title.toLowerCase().replace(/\s+/g, '') : currentEditingTask.status,
         priority: elements.panelPrioritySelect.value,
-        label_ids: Array.from(elements.panelLabelSelect.selectedOptions).map(opt => opt.value),
+        label: elements.panelLabelSelect.value,
         due_date: dueDateValue || null,
         assignee_id: elements.panelAssigneeSelect.value || null
     };
@@ -1695,7 +1368,7 @@ function renderEventLog(task) {
 }
 
 // ===== Task CRUD Operations =====
-async function addTask(title, description, priority, status, labelIds) {
+async function addTask(title, description, priority, status, label) {
     if (!activeBoardId) return;
 
     const taskData = {
@@ -1703,7 +1376,7 @@ async function addTask(title, description, priority, status, labelIds) {
         description,
         priority,
         status,
-        label_ids: labelIds,
+        label,
         board_id: activeBoardId
     };
 
@@ -1735,14 +1408,14 @@ async function addTask(title, description, priority, status, labelIds) {
     }
 }
 
-async function addTaskToColumn(title, description, priority, columnId, labelIds) {
+async function addTaskToColumn(title, description, priority, columnId, label) {
     if (!activeBoardId) return;
 
     const taskData = {
         title,
         description,
         priority,
-        label_ids: labelIds,
+        label,
         board_id: activeBoardId,
         column_id: columnId
     };
@@ -2330,15 +2003,6 @@ function initEventListeners() {
     // Panel save
     elements.savePanelBtn.addEventListener('click', saveTaskFromPanel);
 
-    // Panel label new button
-    const panelLabelNew = document.getElementById('panelLabelNew');
-    if (panelLabelNew) {
-        panelLabelNew.addEventListener('click', (e) => {
-            e.preventDefault();
-            openLabelManager('board');
-        });
-    }
-
     // Panel delete
     elements.deleteTaskBtn.addEventListener('click', () => {
         if (currentEditingTask) {
@@ -2399,31 +2063,6 @@ function initEventListeners() {
 
     // List Deletion
     elements.cancelDeleteListBtn.addEventListener('click', hideDeleteListModal);
-
-    // Label Manager
-    if (elements.labelManagerBtn) {
-        console.log('Attaching label manager button listener');
-        elements.labelManagerBtn.addEventListener('click', (e) => {
-            console.log('Label manager button clicked');
-            e.preventDefault();
-            openLabelManager('global');
-        });
-    } else {
-        console.error('labelManagerBtn element not found during initialization');
-    }
-    if (elements.labelCloseBtn) {
-        elements.labelCloseBtn.addEventListener('click', closeLabelManager);
-    }
-    if (elements.labelCreateBtn) {
-        elements.labelCreateBtn.addEventListener('click', createLabel);
-    }
-    if (elements.labelManagerModal) {
-        elements.labelManagerModal.addEventListener('click', (e) => {
-            if (e.target === elements.labelManagerModal || e.target.classList.contains('bg-gray-900/50')) {
-                closeLabelManager();
-            }
-        });
-    }
 
     // Close create board modal on outside click
     elements.createBoardModal.addEventListener('click', (e) => {
@@ -2623,26 +2262,6 @@ function formatDate(dateString) {
     return date.toLocaleDateString('en-US', options);
 }
 
-// Make functions globally accessible for inline onclick handlers
-window.switchBoard = switchBoard;
-window.showDeleteBoardModal = showDeleteBoardModal;
-window.showCreateListModal = showCreateListModal;
-window.editColumnTitle = editColumnTitle;
-window.deleteColumn = deleteColumn;
-window.scrollToAddCard = scrollToAddCard;
-window.moveColumnLeft = moveColumnLeft;
-window.moveColumnRight = moveColumnRight;
-
-// Debug: Log element availability
-console.log('Elements initialized:', {
-    labelManagerModal: !!elements.labelManagerModal,
-    labelManagerBtn: !!elements.labelManagerBtn,
-    labelCloseBtn: !!elements.labelCloseBtn,
-    labelCreateBtn: !!elements.labelCreateBtn,
-    labelListGlobal: !!elements.labelListGlobal,
-    labelListBoard: !!elements.labelListBoard
-});
-
 // ===== Initialize Application =====
 async function init() {
     initTheme();
@@ -2669,13 +2288,10 @@ async function init() {
         }
 
         await loadWorkspaceMembers();
-        await loadWorkspaceLabels();
         await loadBoards(); // Sets activeBoardId and renders list
 
         if (activeBoardId) {
-            await loadBoardLabels();
-            await loadColumns();
-            await loadTasks();
+            await loadColumns().then(loadTasks);
             connectWebSocket();
         } else {
             // No boards - render empty state

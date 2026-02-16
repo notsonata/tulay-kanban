@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr, ConfigDict
 from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session
 from jose import JWTError, jwt
 
 from backend import models, auth
@@ -560,14 +560,14 @@ def get_workspace_members(ws_id: str, current_user: models.User = Depends(get_cu
 @app.get("/api/tasks/my", response_model=List[TaskResponse])
 def get_my_tasks(current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Get all tasks assigned to the current user across all boards."""
-    tasks = db.query(models.Task).options(joinedload(models.Task.labels)).filter(models.Task.assignee_id == current_user.id).all()
+    tasks = db.query(models.Task).filter(models.Task.assignee_id == current_user.id).all()
     return tasks
 
 # ===== Task Routes =====
 @app.get("/api/boards/{board_id}/tasks", response_model=List[TaskResponse])
 def get_board_tasks(board_id: str, db: Session = Depends(get_db)):
     try:
-        tasks = db.query(models.Task).options(joinedload(models.Task.labels)).filter(models.Task.board_id == board_id).all()
+        tasks = db.query(models.Task).filter(models.Task.board_id == board_id).all()
         return tasks
     except Exception as e:
         print(f"Error loading tasks: {e}")
@@ -635,11 +635,8 @@ async def update_task(task_id: str, updates: dict, current_user: models.User = D
             setattr(task, key, value)
 
     if label_ids is not None:
-        if label_ids:
-            labels = db.query(models.Label).filter(models.Label.id.in_(label_ids)).all()
-            task.labels = labels
-        else:
-            task.labels = []
+        labels = db.query(models.Label).filter(models.Label.id.in_(label_ids)).all()
+        task.labels = labels
     
     db.commit()
     db.refresh(task)
@@ -783,11 +780,7 @@ async def serve_login():
 
 @app.get("/app.js")
 async def serve_app_js():
-    response = FileResponse(STATIC_DIR / "app.js")
-    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    response.headers["Pragma"] = "no-cache"
-    response.headers["Expires"] = "0"
-    return response
+    return FileResponse(STATIC_DIR / "app.js")
 
 if __name__ == "__main__":
     import uvicorn
