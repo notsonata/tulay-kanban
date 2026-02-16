@@ -40,6 +40,7 @@ class Workspace(Base):
     owner = relationship("User", back_populates="owned_workspaces")
     members = relationship("User", secondary=workspace_members, back_populates="workspaces")
     boards = relationship("Board", back_populates="workspace", cascade="all, delete-orphan")
+    labels = relationship("Label", back_populates="workspace", cascade="all, delete-orphan")
 
 class Board(Base):
     __tablename__ = "boards"
@@ -53,6 +54,15 @@ class Board(Base):
     tasks = relationship("Task", back_populates="board", cascade="all, delete-orphan")
     columns = relationship("BoardColumn", back_populates="board", cascade="all, delete-orphan")
     activities = relationship("Activity", back_populates="board")
+    labels = relationship("Label", back_populates="board", cascade="all, delete-orphan")
+
+# Association table for Task Labels
+task_labels = Table(
+    "task_labels",
+    Base.metadata,
+    Column("task_id", String, ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True),
+    Column("label_id", String, ForeignKey("labels.id", ondelete="CASCADE"), primary_key=True)
+)
 
 class BoardColumn(Base):
     __tablename__ = "board_columns"
@@ -87,6 +97,21 @@ class Task(Base):
     board = relationship("Board", back_populates="tasks")
     assignee = relationship("User", back_populates="tasks")
     column = relationship("BoardColumn", back_populates="tasks")
+    labels = relationship("Label", secondary=task_labels, back_populates="tasks")
+
+class Label(Base):
+    __tablename__ = "labels"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    name = Column(String, nullable=False)
+    color = Column(String, nullable=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=True)
+    board_id = Column(String, ForeignKey("boards.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    workspace = relationship("Workspace", back_populates="labels")
+    board = relationship("Board", back_populates="labels")
+    tasks = relationship("Task", secondary=task_labels, back_populates="labels")
 
 class Activity(Base):
     __tablename__ = "activities"

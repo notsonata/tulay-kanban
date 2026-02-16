@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr, ConfigDict
 from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from jose import JWTError, jwt
 
 from backend import models, auth
@@ -105,8 +105,40 @@ def migrate_columns():
     finally:
         db.close()
 
+def migrate_labels():
+    """Create board-scoped labels from legacy task.label values and link tasks."""
+    from backend.database import SessionLocal
+    db = SessionLocal()
+    try:
+        boards = db.query(models.Board).all()
+        for board in boards:
+            existing = {}
+            for label in db.query(models.Label).filter(models.Label.board_id == board.id).all():
+                existing[label.name.lower()] = label
+
+            tasks = db.query(models.Task).filter(models.Task.board_id == board.id).all()
+            for task in tasks:
+                if task.labels or not task.label:
+                    continue
+                label_name = task.label.strip()
+                if not label_name:
+                    continue
+                label = existing.get(label_name.lower())
+                if not label:
+                    label = models.Label(name=label_name, board_id=board.id)
+                    db.add(label)
+                    db.commit()
+                    db.refresh(label)
+                    existing[label_name.lower()] = label
+                task.labels.append(label)
+
+            db.commit()
+    finally:
+        db.close()
+
 seed_db()
 migrate_columns()
+migrate_labels()
 
 # Fix for Windows event loop (ProactorEventLoop support in newer aiokafka versions)
 if sys.platform == 'win32' and sys.version_info < (3, 11):
@@ -231,12 +263,41 @@ class BoardCreate(BaseModel):
     name: str
     workspace_id: str
 
+class BoardColumnCreate(BaseModel):
+    title: str
+    position: int
+    color: Optional[str] = None
+
+class BoardColumnUpdate(BaseModel):
+    title: Optional[str] = None
+    position: Optional[int] = None
+    color: Optional[str] = None
+
+class LabelCreate(BaseModel):
+    name: str
+    color: Optional[str] = None
+
+class LabelUpdate(BaseModel):
+    name: Optional[str] = None
+    color: Optional[str] = None
+
+class LabelResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    name: str
+    color: Optional[str] = None
+    workspace_id: Optional[str] = None
+    board_id: Optional[str] = None
+    created_at: datetime.datetime
+
 class TaskCreate(BaseModel):
     title: str
     description: Optional[str] = None
     priority: str = "medium"
     status: str = "todo"
     label: Optional[str] = None
+    label_ids: Optional[List[str]] = None
     board_id: str
     column_id: Optional[str] = None
     assignee_id: Optional[str] = None
@@ -251,6 +312,7 @@ class TaskResponse(BaseModel):
     priority: str
     status: str
     label: Optional[str] = None
+    labels: List[LabelResponse] = []
     board_id: str
     column_id: Optional[str] = None
     assignee_id: Optional[str] = None
@@ -258,16 +320,6 @@ class TaskResponse(BaseModel):
     events: Optional[list] = []
     created_at: datetime.datetime
     updated_at: datetime.datetime
-
-class BoardColumnCreate(BaseModel):
-    title: str
-    position: int
-    color: Optional[str] = None
-
-class BoardColumnUpdate(BaseModel):
-    title: Optional[str] = None
-    position: Optional[int] = None
-    color: Optional[str] = None
 
 # ===== Auth Dependency =====
 async def get_current_user(db: Session = Depends(get_db), token: str = Depends(oauth2_scheme)):
@@ -287,6 +339,12 @@ async def get_current_user(db: Session = Depends(get_db), token: str = Depends(o
     if user is None:
         raise credentials_exception
     return user
+
+def ensure_workspace_access(ws: models.Workspace, current_user: models.User):
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    if ws.owner_id != current_user.id and not any(m.id == current_user.id for m in ws.members):
+        raise HTTPException(status_code=403, detail="Not authorized for this workspace")
 
 # ===== Auth Routes =====
 @app.post("/api/auth/register", response_model=UserResponse)
@@ -357,6 +415,86 @@ def delete_board(board_id: str, current_user: models.User = Depends(get_current_
     db.commit()
     return {"message": "Board deleted successfully"}
 
+# ===== Label Routes =====
+@app.get("/api/workspaces/{ws_id}/labels", response_model=List[LabelResponse])
+def get_workspace_labels(ws_id: str, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    ws = db.query(models.Workspace).filter(models.Workspace.id == ws_id).first()
+    ensure_workspace_access(ws, current_user)
+    return db.query(models.Label).filter(models.Label.workspace_id == ws_id, models.Label.board_id.is_(None)).all()
+
+@app.post("/api/workspaces/{ws_id}/labels", response_model=LabelResponse)
+def create_workspace_label(ws_id: str, label_in: LabelCreate, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    ws = db.query(models.Workspace).filter(models.Workspace.id == ws_id).first()
+    ensure_workspace_access(ws, current_user)
+    label = models.Label(name=label_in.name, color=label_in.color, workspace_id=ws_id)
+    db.add(label)
+    db.commit()
+    db.refresh(label)
+    return label
+
+@app.get("/api/boards/{board_id}/labels", response_model=List[LabelResponse])
+def get_board_labels(board_id: str, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    board = db.query(models.Board).filter(models.Board.id == board_id).first()
+    if not board:
+        raise HTTPException(status_code=404, detail="Board not found")
+    ws = db.query(models.Workspace).filter(models.Workspace.id == board.workspace_id).first()
+    ensure_workspace_access(ws, current_user)
+    return db.query(models.Label).filter(models.Label.board_id == board_id).all()
+
+@app.post("/api/boards/{board_id}/labels", response_model=LabelResponse)
+def create_board_label(board_id: str, label_in: LabelCreate, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    board = db.query(models.Board).filter(models.Board.id == board_id).first()
+    if not board:
+        raise HTTPException(status_code=404, detail="Board not found")
+    ws = db.query(models.Workspace).filter(models.Workspace.id == board.workspace_id).first()
+    ensure_workspace_access(ws, current_user)
+    label = models.Label(name=label_in.name, color=label_in.color, board_id=board_id)
+    db.add(label)
+    db.commit()
+    db.refresh(label)
+    return label
+
+@app.put("/api/labels/{label_id}", response_model=LabelResponse)
+def update_label(label_id: str, label_in: LabelUpdate, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    label = db.query(models.Label).filter(models.Label.id == label_id).first()
+    if not label:
+        raise HTTPException(status_code=404, detail="Label not found")
+
+    ws_id = label.workspace_id
+    if label.board_id:
+        board = db.query(models.Board).filter(models.Board.id == label.board_id).first()
+        ws_id = board.workspace_id if board else None
+
+    ws = db.query(models.Workspace).filter(models.Workspace.id == ws_id).first()
+    ensure_workspace_access(ws, current_user)
+
+    if label_in.name is not None:
+        label.name = label_in.name
+    if label_in.color is not None:
+        label.color = label_in.color
+
+    db.commit()
+    db.refresh(label)
+    return label
+
+@app.delete("/api/labels/{label_id}")
+def delete_label(label_id: str, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    label = db.query(models.Label).filter(models.Label.id == label_id).first()
+    if not label:
+        raise HTTPException(status_code=404, detail="Label not found")
+
+    ws_id = label.workspace_id
+    if label.board_id:
+        board = db.query(models.Board).filter(models.Board.id == label.board_id).first()
+        ws_id = board.workspace_id if board else None
+
+    ws = db.query(models.Workspace).filter(models.Workspace.id == ws_id).first()
+    ensure_workspace_access(ws, current_user)
+
+    db.delete(label)
+    db.commit()
+    return {"ok": True}
+
 # ===== Column Routes =====
 @app.get("/api/boards/{board_id}/columns")
 def get_board_columns(board_id: str, db: Session = Depends(get_db)):
@@ -422,14 +560,14 @@ def get_workspace_members(ws_id: str, current_user: models.User = Depends(get_cu
 @app.get("/api/tasks/my", response_model=List[TaskResponse])
 def get_my_tasks(current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Get all tasks assigned to the current user across all boards."""
-    tasks = db.query(models.Task).filter(models.Task.assignee_id == current_user.id).all()
+    tasks = db.query(models.Task).options(joinedload(models.Task.labels)).filter(models.Task.assignee_id == current_user.id).all()
     return tasks
 
 # ===== Task Routes =====
 @app.get("/api/boards/{board_id}/tasks", response_model=List[TaskResponse])
 def get_board_tasks(board_id: str, db: Session = Depends(get_db)):
     try:
-        tasks = db.query(models.Task).filter(models.Task.board_id == board_id).all()
+        tasks = db.query(models.Task).options(joinedload(models.Task.labels)).filter(models.Task.board_id == board_id).all()
         return tasks
     except Exception as e:
         print(f"Error loading tasks: {e}")
@@ -439,7 +577,13 @@ def get_board_tasks(board_id: str, db: Session = Depends(get_db)):
 
 @app.post("/api/tasks", response_model=TaskResponse)
 async def create_task(task_in: TaskCreate, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
-    new_task = models.Task(**task_in.model_dump())
+    task_data = task_in.model_dump(exclude={"label_ids"})
+    new_task = models.Task(**task_data)
+
+    if task_in.label_ids:
+        labels = db.query(models.Label).filter(models.Label.id.in_(task_in.label_ids)).all()
+        new_task.labels = labels
+
     db.add(new_task)
     db.commit()
     db.refresh(new_task)
@@ -484,9 +628,18 @@ async def update_task(task_id: str, updates: dict, current_user: models.User = D
     # old_status for Kafka event
     old_status = task.status
     
+    label_ids = updates.pop("label_ids", None)
+
     for key, value in updates.items():
         if hasattr(task, key):
             setattr(task, key, value)
+
+    if label_ids is not None:
+        if label_ids:
+            labels = db.query(models.Label).filter(models.Label.id.in_(label_ids)).all()
+            task.labels = labels
+        else:
+            task.labels = []
     
     db.commit()
     db.refresh(task)
@@ -630,7 +783,11 @@ async def serve_login():
 
 @app.get("/app.js")
 async def serve_app_js():
-    return FileResponse(STATIC_DIR / "app.js")
+    response = FileResponse(STATIC_DIR / "app.js")
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 if __name__ == "__main__":
     import uvicorn
