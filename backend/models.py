@@ -91,6 +91,7 @@ class Task(Base):
     assignee_id = Column(String, ForeignKey("users.id"), nullable=True)
     due_date = Column(DateTime, nullable=True)
     events = Column(JSON, default=[])
+    images = Column(JSON, default=[])
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 

@@ -62,6 +62,10 @@ const elements = {
     panelDueDate: document.getElementById('panelDueDate'),
     panelAssigneeSelect: document.getElementById('panelAssigneeSelect'),
     panelEventLog: document.getElementById('panelEventLog'),
+    panelImagesContainer: document.getElementById('panelImagesContainer'),
+    panelImageUpload: document.getElementById('panelImageUpload'),
+    panelAddImageBtn: document.getElementById('panelAddImageBtn'),
+    imageUploadStatus: document.getElementById('imageUploadStatus'),
     closePanelBtn: document.getElementById('closePanelBtn'),
     cancelPanelBtn: document.getElementById('cancelPanelBtn'),
     savePanelBtn: document.getElementById('savePanelBtn'),
@@ -1373,6 +1377,15 @@ function createTaskCard(task) {
         </div>
         <span class="text-sm font-medium text-[#111418] dark:text-gray-200 leading-snug ${isDone ? 'line-through decoration-gray-400' : ''}">${escapeHtml(task.title)}</span>
         ${task.description ? `<p class="text-xs text-[#5c6b7f] dark:text-gray-400 line-clamp-2">${escapeHtml(task.description)}</p>` : ''}
+        ${task.images && task.images.length > 0 ? `
+            <div class="flex gap-1 overflow-x-auto custom-scrollbar">
+                ${task.images.slice(0, 3).map((url, idx) => `
+                    <img src="${url}" alt="Task preview" data-image-url="${url}" 
+                         class="task-preview-image w-12 h-12 object-cover rounded border border-[#e5e7eb] dark:border-[#1e2936] hover:opacity-80 transition-opacity cursor-pointer">
+                `).join('')}
+                ${task.images.length > 3 ? `<div class="w-12 h-12 flex items-center justify-center bg-gray-100 dark:bg-gray-800 rounded border border-[#e5e7eb] dark:border-[#1e2936] text-xs font-medium text-gray-600 dark:text-gray-400">+${task.images.length - 3}</div>` : ''}
+            </div>
+        ` : ''}
         <div class="mt-1 flex items-center justify-between gap-2">
             ${labelsHTML || '<span></span>'}
             <div class="flex items-center gap-1.5 ${priorityColors[task.priority]}">
@@ -1381,6 +1394,16 @@ function createTaskCard(task) {
             </div>
         </div>
     `;
+
+    // Add click handlers for preview images
+    const previewImages = card.querySelectorAll('.task-preview-image');
+    previewImages.forEach(img => {
+        img.addEventListener('click', (e) => {
+            e.stopPropagation(); // Prevent opening task panel
+            const imageUrl = img.dataset.imageUrl;
+            openImageModal(imageUrl);
+        });
+    });
 
     // Click to open side panel
     card.addEventListener('click', (e) => {
@@ -1572,6 +1595,9 @@ function openTaskPanel(task) {
     });
     elements.panelAssigneeSelect.value = task.assignee_id || '';
 
+    // Render images
+    renderTaskImages(task.images || []);
+
     // Render event log
     renderEventLog(task);
 
@@ -1588,6 +1614,92 @@ function closeTaskPanel() {
         elements.taskPanel.classList.add('hidden');
         currentEditingTask = null;
     }, 150);
+}
+
+// ===== Image Handling =====
+function renderTaskImages(images) {
+    if (!images || images.length === 0) {
+        elements.panelImagesContainer.innerHTML = '<div class="col-span-3 text-xs text-[#8a98a8] p-2">No images added yet</div>';
+        return;
+    }
+
+    elements.panelImagesContainer.innerHTML = images.map((url, index) => `
+        <div class="relative group aspect-square rounded-lg overflow-hidden border border-[#e5e7eb] dark:border-[#1e2936] bg-gray-100 dark:bg-gray-800">
+            <img src="${url}" alt="Task image ${index + 1}" 
+                class="w-full h-full object-cover cursor-pointer hover:opacity-90 transition-opacity"
+                onclick="openImageModal('${url}')">
+            <button type="button" 
+                class="absolute top-1 right-1 p-1 bg-red-600 hover:bg-red-700 text-white rounded-md opacity-0 group-hover:opacity-100 transition-opacity"
+                onclick="removeTaskImage(${index})"
+                title="Remove image">
+                <span class="material-symbols-outlined text-[16px]">close</span>
+            </button>
+        </div>
+    `).join('');
+}
+
+async function uploadTaskImage(file) {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    elements.imageUploadStatus.textContent = 'Uploading...';
+    elements.imageUploadStatus.classList.remove('hidden');
+
+    try {
+        const token = localStorage.getItem('access_token');
+        const response = await fetch(`${API_URL}/api/upload-image`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            },
+            body: formData
+        });
+
+        if (!response.ok) {
+            throw new Error('Upload failed');
+        }
+
+        const data = await response.json();
+        elements.imageUploadStatus.classList.add('hidden');
+        return data.url;
+    } catch (error) {
+        console.error('Error uploading image:', error);
+        elements.imageUploadStatus.textContent = 'Upload failed';
+        setTimeout(() => {
+            elements.imageUploadStatus.classList.add('hidden');
+        }, 3000);
+        showToast('Failed to upload image', 'error');
+        return null;
+    }
+}
+
+function removeTaskImage(index) {
+    if (!currentEditingTask || !currentEditingTask.images) return;
+    
+    currentEditingTask.images.splice(index, 1);
+    renderTaskImages(currentEditingTask.images);
+}
+
+function openImageModal(url) {
+    // Create a simple modal to view the image
+    const modal = document.createElement('div');
+    modal.className = 'fixed inset-0 z-[80] flex items-center justify-center bg-black/80 backdrop-blur-sm';
+    modal.innerHTML = `
+        <div class="relative max-w-4xl max-h-[90vh] p-4">
+            <img src="${url}" alt="Full size image" class="max-w-full max-h-full object-contain rounded-lg">
+            <button class="absolute top-6 right-6 p-2 bg-white/10 hover:bg-white/20 text-white rounded-full transition-colors">
+                <span class="material-symbols-outlined">close</span>
+            </button>
+        </div>
+    `;
+    
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal || e.target.closest('button')) {
+            document.body.removeChild(modal);
+        }
+    });
+    
+    document.body.appendChild(modal);
 }
 
 function saveTaskFromPanel() {
@@ -1618,7 +1730,8 @@ function saveTaskFromPanel() {
         priority: elements.panelPrioritySelect.value,
         label_ids: getSelectedLabelIds(),
         due_date: dueDateValue || null,
-        assignee_id: elements.panelAssigneeSelect.value || null
+        assignee_id: elements.panelAssigneeSelect.value || null,
+        images: currentEditingTask.images || []
     };
 
     if (!updates.title) {
@@ -2300,6 +2413,35 @@ function initEventListeners() {
         if (currentEditingTask) {
             showDeleteModal(currentEditingTask);
         }
+    });
+
+    // Image upload
+    elements.panelAddImageBtn.addEventListener('click', () => {
+        elements.panelImageUpload.click();
+    });
+
+    elements.panelImageUpload.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        // Validate file size (max 5MB)
+        if (file.size > 5 * 1024 * 1024) {
+            showToast('Image must be smaller than 5MB', 'error');
+            e.target.value = '';
+            return;
+        }
+
+        const imageUrl = await uploadTaskImage(file);
+        if (imageUrl && currentEditingTask) {
+            if (!currentEditingTask.images) {
+                currentEditingTask.images = [];
+            }
+            currentEditingTask.images.push(imageUrl);
+            renderTaskImages(currentEditingTask.images);
+        }
+
+        // Clear the input so the same file can be uploaded again
+        e.target.value = '';
     });
 
     // Delete Modal

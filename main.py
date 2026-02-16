@@ -7,12 +7,15 @@ import asyncio
 import json
 import sys
 import datetime
+import os
+import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status, UploadFile, File
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr, ConfigDict
 from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
@@ -21,9 +24,10 @@ from jose import JWTError, jwt
 
 from backend import models, auth
 from backend.database import engine, get_db
+from backend.storage import get_storage_backend
 
-# Create database tables
-models.Base.metadata.create_all(bind=engine)
+# Storage backend will be initialized during app startup
+storage = None
 
 def seed_db():
     from backend.database import SessionLocal
@@ -136,9 +140,46 @@ def migrate_labels():
     finally:
         db.close()
 
-seed_db()
+def migrate_images():
+    """Add images column to tasks table if it doesn't exist"""
+    from backend.database import SessionLocal
+    from sqlalchemy import text, inspect
+    db = SessionLocal()
+    try:
+        # Check if images column exists using SQLAlchemy inspector
+        inspector = inspect(db.bind)
+        columns = [col['name'] for col in inspector.get_columns('tasks')]
+        
+        if 'images' not in columns:
+            print("Adding images column to tasks table...")
+            # Use appropriate SQL based on database type
+            db_dialect = db.bind.dialect.name
+            if db_dialect == 'sqlite':
+                db.execute(text("ALTER TABLE tasks ADD COLUMN images TEXT DEFAULT '[]'"))
+            else:  # PostgreSQL and others
+                db.execute(text("ALTER TABLE tasks ADD COLUMN images JSON DEFAULT '[]'"))
+            db.commit()
+            print("Images column added successfully")
+        else:
+            print("Images column already exists")
+    except Exception as e:
+        print(f"Migration error: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+# Run image migration FIRST (before other migrations that query Task model)
+migrate_images()
+
+# Then run other migrations
 migrate_columns()
 migrate_labels()
+
+# Create any missing tables (this won't recreate existing ones)
+models.Base.metadata.create_all(bind=engine)
+
+# Seed database with test data
+seed_db()
 
 # Fix for Windows event loop (ProactorEventLoop support in newer aiokafka versions)
 if sys.platform == 'win32' and sys.version_info < (3, 11):
@@ -205,8 +246,16 @@ async def consume_events():
 # ===== Lifespan Events =====
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Manage startup and shutdown of Kafka producer/consumer"""
-    global producer, consumer_task
+    """Manage startup and shutdown of Kafka producer/consumer and storage"""
+    global producer, consumer_task, storage
+
+    # Initialize storage backend
+    try:
+        storage = get_storage_backend()
+        print(f"Storage backend initialized: {storage.__class__.__name__}")
+    except Exception as e:
+        print(f"Warning: Failed to initialize storage backend: {e}")
+        print("Image uploads will not work until storage is configured.")
 
     try:
         producer = AIOKafkaProducer(
@@ -302,6 +351,7 @@ class TaskCreate(BaseModel):
     column_id: Optional[str] = None
     assignee_id: Optional[str] = None
     due_date: Optional[datetime.datetime] = None
+    images: Optional[List[str]] = []
 
 class TaskResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -318,6 +368,7 @@ class TaskResponse(BaseModel):
     assignee_id: Optional[str] = None
     due_date: Optional[datetime.datetime] = None
     events: Optional[list] = []
+    images: Optional[List[str]] = []
     created_at: datetime.datetime
     updated_at: datetime.datetime
 
@@ -712,6 +763,45 @@ async def delete_task(task_id: str, current_user: models.User = Depends(get_curr
 
     return {"status": "deleted"}
 
+@app.post("/api/upload-image")
+async def upload_image(
+    file: UploadFile = File(...),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Upload an image and return its URL"""
+    global storage
+    
+    # Check if storage is initialized
+    if storage is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Storage backend not initialized. Check server logs for configuration errors."
+        )
+    
+    # Validate file type
+    allowed_types = ["image/jpeg", "image/png", "image/gif", "image/webp"]
+    if file.content_type not in allowed_types:
+        raise HTTPException(status_code=400, detail="Invalid file type. Only JPEG, PNG, GIF, and WebP are allowed.")
+    
+    # Validate file size (max 5MB)
+    file.file.seek(0, 2)  # Seek to end
+    file_size = file.file.tell()
+    file.file.seek(0)  # Reset to beginning
+    
+    if file_size > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File size must be less than 5MB")
+    
+    # Upload file using storage backend
+    try:
+        url = await storage.upload_file(
+            file=file.file,
+            filename=file.filename,
+            content_type=file.content_type
+        )
+        return {"url": url}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
+
 # ===== Existing Kafka Event Route =====
 @app.post("/api/events")
 async def publish_event(event: KanbanEvent):
@@ -769,6 +859,11 @@ async def websocket_endpoint(websocket: WebSocket, board_id: str):
 
 # ===== Static Files =====
 STATIC_DIR = Path(__file__).parent
+UPLOAD_DIR = STATIC_DIR / "uploads"
+UPLOAD_DIR.mkdir(exist_ok=True)
+
+# Mount uploads directory
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 @app.get("/")
 async def serve_index():

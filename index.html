@@ -399,6 +399,25 @@
                             placeholder="Add a description..."></textarea>
                     </div>
 
+                    <!-- Images -->
+                    <div class="mb-10">
+                        <h3 class="text-sm font-semibold text-[#111418] dark:text-white mb-2">Images</h3>
+                        <div class="flex flex-col gap-3">
+                            <div id="panelImagesContainer" class="grid grid-cols-3 gap-3 min-h-[40px]">
+                                <!-- Images will be dynamically inserted here -->
+                            </div>
+                            <div class="flex items-center gap-3">
+                                <input type="file" id="panelImageUpload" accept="image/*" class="hidden">
+                                <button type="button" id="panelAddImageBtn"
+                                    class="flex items-center gap-2 px-3 py-2 text-sm font-medium text-primary hover:text-blue-600 bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/30 rounded-lg transition-colors">
+                                    <span class="material-symbols-outlined text-[16px]">add_photo_alternate</span>
+                                    Add Image
+                                </button>
+                                <span id="imageUploadStatus" class="text-xs text-[#5c6b7f] dark:text-gray-400 hidden"></span>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Kafka Event Log -->
                     <div
                         class="border border-[#e5e7eb] dark:border-[#1e2936] rounded-xl overflow-hidden bg-[#fbfcfd] dark:bg-[#0d141c] shadow-sm">
